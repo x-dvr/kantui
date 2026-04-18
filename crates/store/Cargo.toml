@@ -1,0 +1,27 @@
+[package]
+name = "kantui-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "kantui_store"
+path = "src/lib.rs"
+
+[features]
+default        = ["sqlite"]
+sqlite         = ["sqlx/sqlite", "sqlx/migrate"]
+postgres       = ["sqlx/postgres", "sqlx/migrate"]
+postgres-tests = ["postgres"]
+
+[dependencies]
+kantui-core = { path = "../core" }
+sqlx        = { workspace = true }
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+uuid        = { workspace = true }
+
+[dev-dependencies]
+kantui-core = { path = "../core" }
+tokio       = { workspace = true }

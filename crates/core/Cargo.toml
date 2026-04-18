@@ -1,0 +1,16 @@
+[package]
+name = "kantui-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "kantui_core"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
