@@ -1,0 +1,11 @@
+//! kantui binary internals exposed as a library so integration tests can
+//! import them. The binary's `main.rs` is a thin wrapper over these modules.
+
+pub mod action;
+pub mod app;
+pub mod cli;
+pub mod event;
+pub mod keymap;
+pub mod logging;
+pub mod tui;
+pub mod view;

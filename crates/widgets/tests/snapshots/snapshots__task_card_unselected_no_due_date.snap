@@ -1,0 +1,9 @@
+---
+source: crates/widgets/tests/snapshots.rs
+expression: out
+---
+┌──────────────────────────────────────┐
+│· ○ Draft plan                        │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

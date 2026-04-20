@@ -12,3 +12,6 @@ path = "src/lib.rs"
 [dependencies]
 kantui-core = { path = "../core" }
 ratatui     = { workspace = true }
+
+[dev-dependencies]
+insta = "1"

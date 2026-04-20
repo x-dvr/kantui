@@ -11,3 +11,6 @@ pub mod sqlite;
 
 pub use clock::SystemClock;
 pub use id::UuidV4;
+
+#[cfg(feature = "sqlite")]
+pub use sqlx::SqlitePool;

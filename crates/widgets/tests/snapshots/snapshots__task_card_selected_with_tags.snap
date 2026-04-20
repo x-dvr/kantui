@@ -1,0 +1,12 @@
+---
+source: crates/widgets/tests/snapshots.rs
+expression: out
+---
+┌──────────────────────────────────────┐
+│↑ ● Wire up status bar                │
+│due 2026-04-20                        │
+│#bug #ui                              │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

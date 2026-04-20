@@ -1,0 +1,5 @@
+---
+source: crates/widgets/tests/snapshots.rs
+expression: out
+---
+ NOR  kantui › In progress › Wire up status bar                    4/12 · 10:42
