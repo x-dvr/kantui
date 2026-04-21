@@ -1,21 +1,22 @@
 //! Application state + top-level event loop.
 //!
-//! M4 is read-only: we load one project's states + tasks at startup, render
-//! it, and let the user navigate. Mutations, modes, and refresh-after-write
-//! arrive in later milestones.
+//! The app holds the on-screen board snapshot, the current mode, and the
+//! pending-edit buffer used while the user is typing in Insert mode. All
+//! persistence calls go through [`AppServices`] into `kantui_core` services.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kantui_core::{
     CoreError, CoreResult, IdGenerator, NewProject, NewTask, Priority, Project, ProjectRepository,
-    ProjectService, Task, TaskRepository, TaskService,
+    ProjectService, Task, TaskId, TaskRepository, TaskService,
 };
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTaskRepo};
-use kantui_store::{SqlitePool, SystemClock};
+use kantui_store::{SqlitePool, SystemClock, UuidV4};
+use kantui_widgets::InputState;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::action::Action;
+use crate::controller;
 use crate::event::{AppEvent, Events};
 use crate::keymap::Keymap;
 use crate::view;
@@ -23,15 +24,33 @@ use crate::view;
 /// Duration between background ticks driving the clock/refresh.
 pub const TICK: Duration = Duration::from_millis(500);
 
-/// UI mode — M4 only needs Normal. Kept as a field so later milestones can
-/// grow Insert/Command/Search without reshaping the state.
+/// UI mode. Normal drives navigation; prompt modes (Insert, Command, Search)
+/// route keys into [`InputState`]; Jump shows two-letter labels and reads
+/// exactly two characters to teleport the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
+    Insert,
+    Command,
+    Search,
+    Jump,
 }
 
-/// In-memory snapshot of what's on screen. The repository is queried once per
-/// refresh, not per render.
+/// What the user is currently typing into in Insert mode.
+#[derive(Debug, Clone)]
+pub enum PendingEdit {
+    /// Create a new task in `column`, positioned after `anchor` (or at the
+    /// column head if `anchor` is `None`).
+    NewTask {
+        column: usize,
+        anchor: Option<TaskId>,
+    },
+    /// Rename an existing task.
+    RenameTask { column: usize, task_id: TaskId },
+}
+
+/// In-memory snapshot of what's on screen. The repository is queried once
+/// per refresh, not per render.
 pub struct BoardSnapshot {
     pub project: Project,
     /// Tasks indexed by the *position* of their state in `project.states`.
@@ -42,11 +61,37 @@ pub struct App {
     pub mode: Mode,
     pub should_quit: bool,
     pub focused_column: usize,
-    /// One selected-task index per column; kept even across column switches.
+    /// One selected-task index per column. Indices are into the currently
+    /// *visible* task list (i.e. already filtered by [`Self::search_query`]).
     pub selected_per_column: Vec<Option<usize>>,
     pub board: BoardSnapshot,
     pub keymap: Keymap,
     pub status_message: Option<String>,
+    pub input: InputState,
+    pub pending_edit: Option<PendingEdit>,
+    /// Active substring filter. `None` when no filter is applied; `Some("")`
+    /// while Search mode is being entered but before any keystrokes.
+    pub search_query: Option<String>,
+    pub show_help: bool,
+    pub jump: Option<JumpState>,
+}
+
+/// Active jump-label overlay. Populated when the user presses `gw` and
+/// consumed as they type the two-character label.
+#[derive(Debug, Clone)]
+pub struct JumpState {
+    /// `(column, visible_index) -> [first, second]` label characters.
+    pub labels: Vec<JumpLabel>,
+    /// First character already typed, if any.
+    pub pending_prefix: Option<char>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct JumpLabel {
+    pub column: usize,
+    /// Index into the column's *visible* (filtered) task list.
+    pub visible_index: usize,
+    pub label: [char; 2],
 }
 
 impl App {
@@ -64,44 +109,95 @@ impl App {
             board,
             keymap: Keymap::new(),
             status_message: None,
+            input: InputState::new(),
+            pending_edit: None,
+            search_query: None,
+            show_help: false,
+            jump: None,
         }
     }
 
-    pub fn apply(&mut self, action: Action) {
-        match action {
-            Action::Noop => {}
-            Action::Quit => self.should_quit = true,
-            Action::FocusPrevColumn => {
-                if self.focused_column > 0 {
-                    self.focused_column -= 1;
-                }
-            }
-            Action::FocusNextColumn => {
-                let max = self.board.project.states.len().saturating_sub(1);
-                if self.focused_column < max {
-                    self.focused_column += 1;
-                }
-            }
-            Action::SelectPrevTask => self.move_selection(-1),
-            Action::SelectNextTask => self.move_selection(1),
-            Action::SelectFirstTask => {
-                if !self.current_tasks().is_empty() {
-                    self.selected_per_column[self.focused_column] = Some(0);
-                }
-            }
-            Action::SelectLastTask => {
-                let len = self.current_tasks().len();
-                if len > 0 {
-                    self.selected_per_column[self.focused_column] = Some(len - 1);
-                }
-            }
-            Action::ToggleHelp => {
-                self.status_message = Some("help overlay not implemented yet".to_owned());
-            }
+    /// Tasks visible in `column` after applying the active filter.
+    #[must_use]
+    pub fn visible_tasks(&self, column: usize) -> Vec<&Task> {
+        let full = self
+            .board
+            .tasks_by_state
+            .get(column)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        match self.active_filter() {
+            Some(q) => full.iter().filter(|t| title_matches(&t.title, q)).collect(),
+            None => full.iter().collect(),
         }
     }
 
-    fn move_selection(&mut self, delta: i32) {
+    /// Visible tasks in the currently focused column.
+    #[must_use]
+    pub fn current_tasks(&self) -> Vec<&Task> {
+        self.visible_tasks(self.focused_column)
+    }
+
+    #[must_use]
+    pub fn selected_task(&self) -> Option<&Task> {
+        let idx = self
+            .selected_per_column
+            .get(self.focused_column)
+            .copied()??;
+        self.current_tasks().get(idx).copied()
+    }
+
+    #[must_use]
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selected_per_column
+            .get(self.focused_column)
+            .copied()
+            .flatten()
+    }
+
+    /// The filter that should be applied to the board. Returns `None` when
+    /// no filter is active (or the query is empty).
+    #[must_use]
+    pub fn active_filter(&self) -> Option<&str> {
+        self.search_query.as_deref().filter(|q| !q.is_empty())
+    }
+
+    /// Re-resolve the selected index per column against the currently-visible
+    /// task lists, preserving the selected [`TaskId`] when possible. Falls
+    /// back to the first visible task if the previous selection is filtered
+    /// out, or `None` when the column is empty.
+    pub fn refresh_selection(&mut self, previous: &[Option<TaskId>]) {
+        for column in 0..self.board.tasks_by_state.len() {
+            let (new_idx, empty) = {
+                let visible = self.visible_tasks(column);
+                let prev_id = previous.get(column).copied().flatten();
+                let idx = prev_id.and_then(|id| visible.iter().position(|t| t.id == id));
+                (idx, visible.is_empty())
+            };
+            let slot = &mut self.selected_per_column[column];
+            *slot = match (new_idx, empty) {
+                (Some(i), _) => Some(i),
+                (None, true) => None,
+                (None, false) => Some(0),
+            };
+        }
+    }
+
+    /// Snapshot of the currently-selected [`TaskId`] per column, useful as an
+    /// argument to [`Self::refresh_selection`] after mutating the filter.
+    #[must_use]
+    pub fn selection_snapshot(&self) -> Vec<Option<TaskId>> {
+        (0..self.board.tasks_by_state.len())
+            .map(|column| {
+                let idx = self.selected_per_column.get(column).copied().flatten()?;
+                self.visible_tasks(column).get(idx).map(|t| t.id)
+            })
+            .collect()
+    }
+
+    /// Move the selection within the focused column by `delta`, clamped to
+    /// the column bounds. A no-op if the column is empty.
+    pub fn move_selection(&mut self, delta: i32) {
         let len = self.current_tasks().len();
         if len == 0 {
             self.selected_per_column[self.focused_column] = None;
@@ -112,25 +208,110 @@ impl App {
         self.selected_per_column[self.focused_column] = Some(next);
     }
 
-    pub fn current_tasks(&self) -> &[Task] {
-        self.board
-            .tasks_by_state
-            .get(self.focused_column)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
     }
 
-    pub fn selected_task(&self) -> Option<&Task> {
-        let idx = self
-            .selected_per_column
-            .get(self.focused_column)
-            .copied()??;
-        self.current_tasks().get(idx)
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+    }
+
+    /// Enter Insert mode with the given pending edit. `initial` seeds the
+    /// input buffer (empty for new tasks, existing title for renames).
+    pub fn enter_insert(&mut self, edit: PendingEdit, initial: &str) {
+        self.mode = Mode::Insert;
+        self.pending_edit = Some(edit);
+        self.input = InputState::with_value(initial);
+    }
+
+    /// Cancel any in-flight insert-mode edit and return to Normal. Does not
+    /// touch Command/Search state — those have their own reset paths.
+    pub fn leave_insert(&mut self) {
+        self.mode = Mode::Normal;
+        self.pending_edit = None;
+        self.input.clear();
+    }
+
+    /// Enter Command mode with an empty input buffer.
+    pub fn enter_command(&mut self) {
+        self.mode = Mode::Command;
+        self.pending_edit = None;
+        self.input = InputState::new();
+    }
+
+    /// Enter Search mode. The filter starts empty; every subsequent key
+    /// refreshes `search_query` live.
+    pub fn enter_search(&mut self) {
+        self.mode = Mode::Search;
+        self.pending_edit = None;
+        self.input = InputState::new();
+        self.search_query = Some(String::new());
+    }
+
+    /// Clear any prompt state and return to Normal mode.
+    pub fn leave_prompt(&mut self) {
+        self.mode = Mode::Normal;
+        self.pending_edit = None;
+        self.input.clear();
+    }
+
+    /// After a task is inserted into the snapshot, clamp the selection to
+    /// the newly inserted index.
+    pub fn select_in_column(&mut self, column: usize, index: usize) {
+        if let Some(slot) = self.selected_per_column.get_mut(column) {
+            *slot = Some(index);
+        }
+    }
+}
+
+fn title_matches(title: &str, query: &str) -> bool {
+    let q = query.trim();
+    if q.is_empty() {
+        return true;
+    }
+    title.to_lowercase().contains(&q.to_lowercase())
+}
+
+/// Services wired at the composition root. Cheap to clone because repos are
+/// thin wrappers around `Arc<SqlitePool>` and the clock/id generators are
+/// zero-sized.
+#[derive(Clone)]
+pub struct AppServices {
+    pool: SqlitePool,
+    clock: SystemClock,
+    ids: UuidV4,
+}
+
+impl AppServices {
+    #[must_use]
+    pub fn new(pool: SqlitePool, clock: SystemClock, ids: UuidV4) -> Self {
+        Self { pool, clock, ids }
+    }
+
+    #[must_use]
+    pub fn project_repo(&self) -> SqliteProjectRepo {
+        SqliteProjectRepo::new(self.pool.clone())
+    }
+
+    #[must_use]
+    pub fn task_repo(&self) -> SqliteTaskRepo {
+        SqliteTaskRepo::new(self.pool.clone())
+    }
+
+    #[must_use]
+    pub fn task_service(
+        &self,
+    ) -> TaskService<SqliteProjectRepo, SqliteTaskRepo, SystemClock, UuidV4> {
+        TaskService::new(self.project_repo(), self.task_repo(), self.clock, self.ids)
     }
 }
 
 /// Main entry point — owns the terminal and the event loop.
-pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> CoreResult<()> {
+pub async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    services: &AppServices,
+) -> CoreResult<()> {
     let mut events = Events::start(TICK);
 
     loop {
@@ -148,8 +329,11 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> CoreR
 
         match event {
             AppEvent::Key(key) => {
-                let action = app.keymap.dispatch(key);
-                app.apply(action);
+                let action = app.keymap.dispatch(app.mode, key);
+                if let Err(err) = controller::process(action, app, services).await {
+                    tracing::error!("{}", err.log_chain());
+                    app.set_status(err.to_string());
+                }
             }
             AppEvent::Resize => {}
             AppEvent::Tick => {}
@@ -176,8 +360,6 @@ pub async fn load_board(
         in_state.sort_by_key(|t| t.position);
         tasks_by_state.push(in_state);
     }
-    // Silence unused-variable warning in read-only builds where projects is
-    // carried for parity with future refresh paths.
     let _ = projects;
     Ok(BoardSnapshot {
         project,

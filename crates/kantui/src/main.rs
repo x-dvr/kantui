@@ -56,9 +56,10 @@ async fn run(resolved: cli::Resolved) -> CoreResult<()> {
     let projects_repo = SqliteProjectRepo::new(pool.clone());
     let board = app::load_board(&projects_repo, &tasks_repo, project).await?;
     let mut app_state = app::App::new(board);
+    let services = app::AppServices::new(pool.clone(), SystemClock::new(), UuidV4::new());
 
     let mut terminal = tui::init().map_err(io_to_core)?;
-    let result = app::run(&mut terminal, &mut app_state).await;
+    let result = app::run(&mut terminal, &mut app_state, &services).await;
     tui::restore().map_err(io_to_core)?;
 
     result

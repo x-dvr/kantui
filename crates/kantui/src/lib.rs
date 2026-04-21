@@ -4,7 +4,9 @@
 pub mod action;
 pub mod app;
 pub mod cli;
+pub mod controller;
 pub mod event;
+pub mod jump;
 pub mod keymap;
 pub mod logging;
 pub mod tui;

@@ -2,8 +2,9 @@
 
 use kantui_core::Task;
 use kantui_widgets::{
-    BoardView, BoardViewModel, Mode as WidgetMode, StateColumnView, StatusBar, StatusBarView,
-    StatusCounts, TagChip, TaskCardView, Theme,
+    BoardView, BoardViewModel, HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels,
+    Mode as WidgetMode, StateColumnView, StatusBar, StatusBarView, StatusCounts, TagChip,
+    TaskCardView, Theme,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -11,7 +12,12 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, PendingEdit};
+
+/// Height of a task card in rows (must match widgets::state_column).
+const TASK_CARD_ROWS: u16 = 6;
+/// Minimum width (in cells) for a single state column (must match widgets::board).
+const MIN_COLUMN_WIDTH: u16 = 20;
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let theme = Theme::default();
@@ -20,23 +26,58 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     let bg = Paragraph::new(Line::from("")).style(Style::default().bg(theme.background));
     frame.render_widget(bg, area);
 
+    let show_prompt = matches!(app.mode, Mode::Insert | Mode::Command | Mode::Search);
+    let constraints: Vec<Constraint> = if show_prompt {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints(constraints)
         .split(area);
 
-    render_board(frame, chunks[0], app, &theme);
-    render_status(frame, chunks[1], app, &theme);
+    let board_area = chunks[0];
+    render_board(frame, board_area, app, &theme);
+
+    if show_prompt {
+        render_prompt(frame, chunks[1], app, &theme);
+        render_status(frame, chunks[2], app, &theme);
+    } else {
+        render_status(frame, chunks[1], app, &theme);
+    }
+
+    if app.mode == Mode::Jump
+        && let Some(jump_state) = &app.jump
+    {
+        let labels = build_jump_label_views(app, board_area, &jump_state.labels);
+        frame.render_widget(
+            JumpLabels::new(&labels, &theme).pending_prefix(jump_state.pending_prefix),
+            board_area,
+        );
+    }
+
+    if app.show_help {
+        frame.render_widget(HelpOverlay::new("Keybindings", HELP_ROWS, &theme), area);
+    }
 }
 
 fn render_board(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
-    // Own the TaskCardView vectors (one per column) so the slices we hand to
-    // StateColumnView outlive the render call.
-    let cards_by_column: Vec<Vec<TaskCardView<'_>>> = app
-        .board
-        .tasks_by_state
+    // Own the per-column TaskCardView vectors so the slices we hand to
+    // StateColumnView outlive the render call. The visible lists already
+    // reflect the active search filter.
+    let visible_by_column: Vec<Vec<&Task>> = (0..app.board.project.states.len())
+        .map(|i| app.visible_tasks(i))
+        .collect();
+
+    let cards_by_column: Vec<Vec<TaskCardView<'_>>> = visible_by_column
         .iter()
-        .map(|tasks| tasks.iter().map(task_to_view).collect())
+        .map(|tasks| tasks.iter().map(|t| task_to_view(t)).collect())
         .collect();
 
     let columns: Vec<StateColumnView<'_>> = app
@@ -67,15 +108,27 @@ fn task_to_view(task: &Task) -> TaskCardView<'_> {
         priority: task.priority,
         complexity: task.complexity,
         due_date: task.due_date,
-        // Tags resolve once a TagRepository wire-up lands (M7). For now,
-        // render without chips.
         tags: &[] as &[TagChip<'_>],
     }
 }
 
+fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    let prefix = match (app.mode, app.pending_edit.as_ref()) {
+        (Mode::Insert, Some(PendingEdit::NewTask { .. })) => "new › ",
+        (Mode::Insert, Some(PendingEdit::RenameTask { .. })) => "rename › ",
+        (Mode::Command, _) => ":",
+        (Mode::Search, _) => "/",
+        _ => "› ",
+    };
+    frame.render_widget(Input::new(&app.input, theme).prefix(prefix), area);
+}
+
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let mode = match app.mode {
-        Mode::Normal => WidgetMode::Normal,
+        Mode::Normal | Mode::Jump => WidgetMode::Normal,
+        Mode::Insert => WidgetMode::Insert,
+        Mode::Command => WidgetMode::Command,
+        Mode::Search => WidgetMode::Search,
     };
 
     let state_name = app
@@ -88,6 +141,12 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 
     let selected_title = app.selected_task().map(|t| t.title.as_str());
     let message = app.status_message.as_deref();
+    let filter_note = app
+        .active_filter()
+        .map(|f| format!("/{f}"))
+        .or_else(|| (app.mode == Mode::Jump).then(|| "jump".to_owned()));
+
+    let right_hint: Option<String> = filter_note;
 
     let clock = crate::app::format_clock_utc();
 
@@ -105,11 +164,13 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .map(|ts| ts.len() as u32)
         .unwrap_or(0);
 
+    let task_title = message.or(selected_title).or(right_hint.as_deref());
+
     let view = StatusBarView {
         mode,
         project: app.board.project.name.as_str(),
         state: state_name,
-        task_title: message.or(selected_title),
+        task_title,
         counts: StatusCounts {
             tasks_total: total,
             tasks_done: done,
@@ -118,3 +179,119 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     };
     frame.render_widget(StatusBar::new(view, theme), area);
 }
+
+/// Place each jump label at the top-left of the corresponding task card.
+/// Mirrors the layout math in `widgets::board` / `widgets::state_column`.
+fn build_jump_label_views<'a>(
+    app: &App,
+    board_area: Rect,
+    labels: &'a [crate::app::JumpLabel],
+) -> Vec<JumpLabelView<'a>> {
+    let n = app.board.project.states.len().max(1) as u16;
+    if board_area.width == 0 || board_area.height == 0 {
+        return Vec::new();
+    }
+    let column_width = (board_area.width / n).max(MIN_COLUMN_WIDTH.min(board_area.width));
+
+    labels
+        .iter()
+        .filter_map(|l| {
+            let column_x = board_area.x + (l.column as u16) * column_width;
+            // Inside the column: one row for the top border, then each card
+            // occupies TASK_CARD_ROWS rows.
+            let inner_top = board_area.y.saturating_add(1);
+            let y = inner_top.saturating_add((l.visible_index as u16) * TASK_CARD_ROWS);
+            // Inside the column block: offset one cell to the right of the
+            // left border so the label sits on the first content column.
+            let x = column_x.saturating_add(1);
+            if y >= board_area.y + board_area.height {
+                return None;
+            }
+            Some(JumpLabelView {
+                label: label_str(&l.label),
+                x,
+                y,
+            })
+        })
+        .collect()
+}
+
+/// Cache a static string slice per label pair. A tiny lookup table beats
+/// allocating a new `String` every render.
+fn label_str(label: &[char; 2]) -> &'static str {
+    static TABLE: std::sync::OnceLock<[String; 26 * 26]> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut arr: [String; 26 * 26] = std::array::from_fn(|_| String::new());
+        for i in 0..26 {
+            for j in 0..26 {
+                let first = (b'a' + i as u8) as char;
+                let second = (b'a' + j as u8) as char;
+                arr[i * 26 + j] = format!("{first}{second}");
+            }
+        }
+        arr
+    });
+    let idx = (label[0] as usize - 'a' as usize) * 26 + (label[1] as usize - 'a' as usize);
+    table[idx].as_str()
+}
+
+/// Keybind cheatsheet shown by [`HelpOverlay`]. Kept in the binary because
+/// the exact set of keys lives here (not in the widgets crate).
+const HELP_ROWS: &[HelpRow<'static>] = &[
+    HelpRow {
+        keys: "h / l",
+        description: "Focus previous / next column",
+    },
+    HelpRow {
+        keys: "j / k",
+        description: "Select next / previous task",
+    },
+    HelpRow {
+        keys: "gg / G",
+        description: "Top / bottom of column",
+    },
+    HelpRow {
+        keys: "gw",
+        description: "Enter two-char jump mode",
+    },
+    HelpRow {
+        keys: "n / N",
+        description: "New task below / above selection",
+    },
+    HelpRow {
+        keys: "i",
+        description: "Rename selected task",
+    },
+    HelpRow {
+        keys: "d",
+        description: "Delete selected task",
+    },
+    HelpRow {
+        keys: "H / L",
+        description: "Move task to previous / next column",
+    },
+    HelpRow {
+        keys: "K / J",
+        description: "Shift task up / down within column",
+    },
+    HelpRow {
+        keys: ":",
+        description: "Enter command mode",
+    },
+    HelpRow {
+        keys: "/",
+        description: "Enter search mode (live filter)",
+    },
+    HelpRow {
+        keys: "?",
+        description: "Toggle this help overlay",
+    },
+    HelpRow {
+        keys: "q",
+        description: "Quit",
+    },
+    HelpRow {
+        keys: "Esc",
+        description: "Cancel prompt / exit jump mode",
+    },
+];
