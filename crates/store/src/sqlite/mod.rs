@@ -27,6 +27,13 @@ pub async fn connect(url: &str) -> CoreResult<SqlitePool> {
         .map_err(|e| CoreError::storage(format!("bad sqlite url: {url}"), e))?
         .foreign_keys(true)
         .create_if_missing(true);
+    if let Some(parent) = opts.get_filename().parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CoreError::storage(format!("create db dir {} failed", parent.display()), e)
+        })?;
+    }
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(opts)

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use kantui::{app, cli, logging, tui};
-use kantui_core::{CoreError, CoreResult, ProjectRepository as _};
+use kantui_core::{CoreError, CoreResult};
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTaskRepo};
 use kantui_store::{SystemClock, UuidV4, sqlite};
 
@@ -44,12 +44,7 @@ async fn run(resolved: cli::Resolved) -> CoreResult<()> {
     let project = if resolved.seed_demo {
         app::seed_demo_if_empty(pool.clone(), SystemClock::new(), UuidV4::new()).await?
     } else {
-        let repo = SqliteProjectRepo::new(pool.clone());
-        repo.list()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| CoreError::validation("no projects in the database"))?
+        app::ensure_default_project(pool.clone(), SystemClock::new(), UuidV4::new()).await?
     };
 
     let tasks_repo = SqliteTaskRepo::new(pool.clone());

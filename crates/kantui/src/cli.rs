@@ -22,8 +22,9 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
-    /// On first run (empty DB), seed a sample project so the UI is non-empty.
-    #[arg(long, default_value_t = true)]
+    /// On first run (empty DB), also seed a few sample tasks. Without this,
+    /// the default project is created with empty columns.
+    #[arg(long, default_value_t = false)]
     pub seed_demo: bool,
 }
 

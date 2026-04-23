@@ -367,6 +367,29 @@ pub async fn load_board(
     })
 }
 
+/// Ensure the DB has at least one project. If the DB is empty, create a blank
+/// `kantui` project with `Todo` / `Doing` / `Done` columns and no tasks so
+/// the UI has somewhere to render.
+pub async fn ensure_default_project(
+    pool: SqlitePool,
+    clock: SystemClock,
+    ids: impl IdGenerator + Copy,
+) -> CoreResult<Project> {
+    let project_repo = SqliteProjectRepo::new(pool.clone());
+    if let Some(first) = project_repo.list().await?.into_iter().next() {
+        return Ok(first);
+    }
+
+    let project_service = ProjectService::new(SqliteProjectRepo::new(pool.clone()), clock, ids);
+    project_service
+        .create(NewProject {
+            name: "kantui".to_owned(),
+            description: None,
+            initial_states: vec!["Todo".into(), "Doing".into(), "Done".into()],
+        })
+        .await
+}
+
 /// Seed a demo project when the DB has none, so first-run users see a board.
 pub async fn seed_demo_if_empty(
     pool: SqlitePool,
@@ -374,26 +397,18 @@ pub async fn seed_demo_if_empty(
     ids: impl IdGenerator + Copy,
 ) -> CoreResult<Project> {
     let project_repo = SqliteProjectRepo::new(pool.clone());
-    let existing = project_repo.list().await?;
-    if let Some(first) = existing.into_iter().next() {
+    if let Some(first) = project_repo.list().await?.into_iter().next() {
         return Ok(first);
     }
 
-    let project_service = ProjectService::new(SqliteProjectRepo::new(pool.clone()), clock, ids);
+    let project = ensure_default_project(pool.clone(), clock, ids).await?;
+
     let task_service = TaskService::new(
         SqliteProjectRepo::new(pool.clone()),
         SqliteTaskRepo::new(pool.clone()),
         clock,
         ids,
     );
-
-    let project = project_service
-        .create(NewProject {
-            name: "kantui".to_owned(),
-            description: Some("Demo board — delete with `:delete-project`.".to_owned()),
-            initial_states: vec!["Todo".into(), "Doing".into(), "Done".into()],
-        })
-        .await?;
 
     let states = &project.states;
     let todo = states[0].id;

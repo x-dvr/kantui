@@ -6,7 +6,9 @@ use kantui_core::{
     Color, Complexity, CoreError, EntityId, Priority, Project, ProjectId, ProjectRepository, State,
     StateId, Tag, TagId, TagRepository, Task, TaskId, TaskRepository, Timestamp,
 };
-use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo, connect_memory};
+use kantui_store::sqlite::{
+    SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo, connect, connect_memory,
+};
 
 fn eid(n: u8) -> EntityId {
     let mut b = [0u8; 16];
@@ -372,4 +374,21 @@ async fn deleting_project_cascades_states_tasks_and_transitions() {
     assert!(tr.get(t.id).await.unwrap().is_none());
     assert!(tr.list_transitions(t.id).await.unwrap().is_empty());
     assert!(tr.list_by_project(p.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn connect_creates_missing_parent_directory() {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("kantui-connect-test-{}", uuid::Uuid::new_v4()));
+    let db_path = dir.join("nested").join("kantui.db");
+    assert!(!db_path.parent().unwrap().exists());
+
+    let url = format!("sqlite://{}", db_path.display());
+    let pool = connect(&url)
+        .await
+        .expect("connect should create parent dir");
+    drop(pool);
+
+    assert!(db_path.exists(), "db file should be created");
+    std::fs::remove_dir_all(&dir).ok();
 }
