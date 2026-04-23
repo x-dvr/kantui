@@ -2,10 +2,12 @@
 
 use kantui_core::Task;
 use kantui_widgets::{
-    BoardView, BoardViewModel, HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels,
-    Mode as WidgetMode, StateColumnView, StatusBar, StatusBarView, StatusCounts, TagChip,
-    TaskCardView, Theme,
+    BoardView, BoardViewModel, Dashboard, DashboardStateRow, DashboardThroughput, DashboardView,
+    HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode, StateColumnView,
+    StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, Theme,
 };
+
+use crate::app::BoardSnapshot;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -62,9 +64,92 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         );
     }
 
+    if app.mode == Mode::TagPicker
+        && let Some(picker) = &app.tag_picker
+    {
+        render_tag_picker(frame, area, picker, &theme);
+    }
+
+    if app.mode == Mode::Dashboard
+        && let Some(snapshot) = &app.dashboard
+    {
+        render_dashboard(frame, area, app, snapshot, &theme);
+    }
+
     if app.show_help {
         frame.render_widget(HelpOverlay::new("Keybindings", HELP_ROWS, &theme), area);
     }
+}
+
+fn render_dashboard(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    snapshot: &crate::app::DashboardSnapshot,
+    theme: &Theme,
+) {
+    // Own strings referenced by the DashboardStateRow slice for the duration
+    // of this call.
+    let mut rows: Vec<DashboardStateRow<'_>> = Vec::with_capacity(app.board.project.states.len());
+    let sojourns_by_state: std::collections::HashMap<[u8; 16], (u64, u32)> = snapshot
+        .sojourns
+        .iter()
+        .map(|s| (*s.state_id.inner().as_bytes(), (s.total.as_secs(), s.count)))
+        .collect();
+    for (i, state) in app.board.project.states.iter().enumerate() {
+        let tasks = app.board.tasks_by_state.get(i).map(Vec::len).unwrap_or(0) as u32;
+        let (total_seconds, visits) = sojourns_by_state
+            .get(state.id.inner().as_bytes())
+            .copied()
+            .unwrap_or((0, 0));
+        rows.push(DashboardStateRow {
+            name: state.name.as_str(),
+            tasks,
+            wip_limit: state.wip_limit,
+            total_seconds,
+            visits,
+        });
+    }
+
+    let view = DashboardView {
+        project_name: app.board.project.name.as_str(),
+        states: &rows,
+        throughput: DashboardThroughput {
+            total: snapshot.throughput.total,
+            per_day: &snapshot.throughput.per_day,
+        },
+    };
+    frame.render_widget(Dashboard::new(view, theme), area);
+}
+
+fn render_tag_picker(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    picker: &crate::app::TagPickerState,
+    theme: &Theme,
+) {
+    // Own the row strings so the HelpOverlay borrows outlive this call.
+    let owned: Vec<(String, String)> = picker
+        .rows
+        .iter()
+        .map(|r| {
+            let keys = format!("[{}]", r.label);
+            let mark = if r.attached { "●" } else { "○" };
+            let desc = format!("{mark} #{}", r.tag.name);
+            (keys, desc)
+        })
+        .collect();
+    let rows: Vec<HelpRow<'_>> = owned
+        .iter()
+        .map(|(k, d)| HelpRow {
+            keys: k.as_str(),
+            description: d.as_str(),
+        })
+        .collect();
+    frame.render_widget(
+        HelpOverlay::new("Toggle tag (Esc to close)", &rows, theme),
+        area,
+    );
 }
 
 fn render_board(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -75,9 +160,29 @@ fn render_board(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .map(|i| app.visible_tasks(i))
         .collect();
 
+    // Resolve each task's `Vec<TagId>` into owned `TagChip` vectors. These
+    // live for the whole render call so the slices handed to TaskCardView
+    // remain valid.
+    let chips_by_task: Vec<Vec<Vec<TagChip<'_>>>> = visible_by_column
+        .iter()
+        .map(|tasks| {
+            tasks
+                .iter()
+                .map(|t| task_chips(t, &app.board))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
     let cards_by_column: Vec<Vec<TaskCardView<'_>>> = visible_by_column
         .iter()
-        .map(|tasks| tasks.iter().map(|t| task_to_view(t)).collect())
+        .zip(chips_by_task.iter())
+        .map(|(tasks, chips)| {
+            tasks
+                .iter()
+                .zip(chips.iter())
+                .map(|(t, c)| task_to_view(t, c))
+                .collect()
+        })
         .collect();
 
     let columns: Vec<StateColumnView<'_>> = app
@@ -102,14 +207,25 @@ fn render_board(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(BoardView::new(board, theme), area);
 }
 
-fn task_to_view(task: &Task) -> TaskCardView<'_> {
+fn task_to_view<'a>(task: &'a Task, chips: &'a [TagChip<'a>]) -> TaskCardView<'a> {
     TaskCardView {
         title: task.title.as_str(),
         priority: task.priority,
         complexity: task.complexity,
         due_date: task.due_date,
-        tags: &[] as &[TagChip<'_>],
+        tags: chips,
     }
+}
+
+fn task_chips<'a>(task: &Task, board: &'a BoardSnapshot) -> Vec<TagChip<'a>> {
+    task.tags
+        .iter()
+        .filter_map(|id| board.tag_by_id(*id))
+        .map(|tag| TagChip {
+            name: tag.name.as_str(),
+            color: tag.color,
+        })
+        .collect()
 }
 
 fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
@@ -125,7 +241,7 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let mode = match app.mode {
-        Mode::Normal | Mode::Jump => WidgetMode::Normal,
+        Mode::Normal | Mode::Jump | Mode::TagPicker | Mode::Dashboard => WidgetMode::Normal,
         Mode::Insert => WidgetMode::Insert,
         Mode::Command => WidgetMode::Command,
         Mode::Search => WidgetMode::Search,
@@ -144,7 +260,8 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let filter_note = app
         .active_filter()
         .map(|f| format!("/{f}"))
-        .or_else(|| (app.mode == Mode::Jump).then(|| "jump".to_owned()));
+        .or_else(|| (app.mode == Mode::Jump).then(|| "jump".to_owned()))
+        .or_else(|| (app.mode == Mode::TagPicker).then(|| "tag".to_owned()));
 
     let right_hint: Option<String> = filter_note;
 
@@ -275,16 +392,20 @@ const HELP_ROWS: &[HelpRow<'static>] = &[
         description: "Shift task up / down within column",
     },
     HelpRow {
+        keys: "t",
+        description: "Tag picker (toggle tags on selected task)",
+    },
+    HelpRow {
+        keys: "gs",
+        description: "Open statistics dashboard",
+    },
+    HelpRow {
         keys: ":",
         description: "Enter command mode",
     },
     HelpRow {
         keys: "/",
-        description: "Enter search mode (live filter)",
-    },
-    HelpRow {
-        keys: "?",
-        description: "Toggle this help overlay",
+        description: "Search (live filter; `#tag` filters by tag)",
     },
     HelpRow {
         keys: "q",

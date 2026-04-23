@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use kantui::{app, cli, logging, tui};
 use kantui_core::{CoreError, CoreResult};
-use kantui_store::sqlite::{SqliteProjectRepo, SqliteTaskRepo};
+use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SystemClock, UuidV4, sqlite};
 
 #[tokio::main]
@@ -49,7 +49,8 @@ async fn run(resolved: cli::Resolved) -> CoreResult<()> {
 
     let tasks_repo = SqliteTaskRepo::new(pool.clone());
     let projects_repo = SqliteProjectRepo::new(pool.clone());
-    let board = app::load_board(&projects_repo, &tasks_repo, project).await?;
+    let tags_repo = SqliteTagRepo::new(pool.clone());
+    let board = app::load_board(&projects_repo, &tasks_repo, &tags_repo, project).await?;
     let mut app_state = app::App::new(board);
     let services = app::AppServices::new(pool.clone(), SystemClock::new(), UuidV4::new());
 

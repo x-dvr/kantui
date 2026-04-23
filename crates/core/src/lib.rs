@@ -11,7 +11,7 @@ pub mod services;
 
 pub use domain::{
     Color, Complexity, Duration, EntityId, Priority, Project, ProjectId, State, StateId,
-    StateSojourn, Tag, TagId, Task, TaskId, TaskTransition, Timestamp,
+    StateSojourn, Tag, TagId, Task, TaskId, TaskTransition, Throughput, Timestamp,
 };
 pub use error::{CoreError, CoreResult, EntityKind};
 pub use ports::{Clock, IdGenerator, ProjectRepository, TagRepository, TaskRepository};

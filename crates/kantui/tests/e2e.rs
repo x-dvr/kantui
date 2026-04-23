@@ -10,7 +10,7 @@ use kantui::app::{self, App, AppServices, Mode};
 use kantui::controller;
 use kantui::view;
 use kantui_core::{ProjectRepository as _, TaskRepository as _};
-use kantui_store::sqlite::{SqliteProjectRepo, SqliteTaskRepo};
+use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SqlitePool, SystemClock, UuidV4, sqlite};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -38,6 +38,7 @@ async fn seeded_pool() -> SqlitePool {
 async fn build_app(pool: SqlitePool) -> App {
     let projects = SqliteProjectRepo::new(pool.clone());
     let tasks = SqliteTaskRepo::new(pool.clone());
+    let tags = SqliteTagRepo::new(pool.clone());
     let project = projects
         .list()
         .await
@@ -45,7 +46,7 @@ async fn build_app(pool: SqlitePool) -> App {
         .into_iter()
         .next()
         .expect("seeded project");
-    let board = app::load_board(&projects, &tasks, project)
+    let board = app::load_board(&projects, &tasks, &tags, project)
         .await
         .expect("load board");
     App::new(board)
@@ -447,4 +448,138 @@ async fn rename_updates_title() {
     let repo = SqliteTaskRepo::new(pool.clone());
     let reloaded = repo.get(victim_id).await.expect("get").expect("exists");
     assert_eq!(reloaded.title, "Renamed task");
+}
+
+// ---------------------------------------------------------------------------
+// Tags (M7)
+// ---------------------------------------------------------------------------
+
+async fn run_command(app: &mut App, services: &AppServices, cmd: &str) {
+    dispatch_key(app, services, KeyCode::Char(':'), KeyModifiers::NONE).await;
+    type_text(app, services, cmd).await;
+    dispatch_key(app, services, KeyCode::Enter, KeyModifiers::NONE).await;
+}
+
+#[tokio::test]
+async fn tag_new_command_creates_tag_in_snapshot() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    assert!(app.board.all_tags.is_empty());
+
+    run_command(&mut app, &services, "tag-new bug red").await;
+    assert_eq!(app.board.all_tags.len(), 1);
+    assert_eq!(app.board.all_tags[0].name, "bug");
+}
+
+#[tokio::test]
+async fn tag_picker_attaches_tag_to_selected_task() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    run_command(&mut app, &services, "tag-new urgent red").await;
+    assert_eq!(app.board.all_tags.len(), 1);
+
+    let task_id = app.board.tasks_by_state[0][0].id;
+
+    dispatch_key(&mut app, &services, KeyCode::Char('t'), KeyModifiers::NONE).await;
+    assert_eq!(app.mode, Mode::TagPicker);
+    let picker = app.tag_picker.as_ref().expect("picker open");
+    assert_eq!(picker.rows.len(), 1);
+    assert_eq!(picker.rows[0].label, 'a');
+    assert!(!picker.rows[0].attached);
+
+    dispatch_key(&mut app, &services, KeyCode::Char('a'), KeyModifiers::NONE).await;
+    let updated = app
+        .board
+        .tasks_by_state
+        .iter()
+        .flatten()
+        .find(|t| t.id == task_id)
+        .expect("task still present");
+    assert_eq!(updated.tags.len(), 1);
+
+    // Second toggle detaches.
+    dispatch_key(&mut app, &services, KeyCode::Char('a'), KeyModifiers::NONE).await;
+    let updated = app
+        .board
+        .tasks_by_state
+        .iter()
+        .flatten()
+        .find(|t| t.id == task_id)
+        .expect("task still present");
+    assert!(updated.tags.is_empty());
+
+    dispatch_key(&mut app, &services, KeyCode::Esc, KeyModifiers::NONE).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.tag_picker.is_none());
+}
+
+#[tokio::test]
+async fn search_by_tag_prefix_filters_tasks() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    run_command(&mut app, &services, "tag-new bug red").await;
+
+    // Attach the tag to the first Todo task.
+    dispatch_key(&mut app, &services, KeyCode::Char('t'), KeyModifiers::NONE).await;
+    dispatch_key(&mut app, &services, KeyCode::Char('a'), KeyModifiers::NONE).await;
+    dispatch_key(&mut app, &services, KeyCode::Esc, KeyModifiers::NONE).await;
+
+    assert_eq!(app.visible_tasks(0).len(), 2);
+
+    dispatch_key(&mut app, &services, KeyCode::Char('/'), KeyModifiers::NONE).await;
+    type_text(&mut app, &services, "#bug").await;
+
+    // Only the tagged task remains in column 0; untagged columns are empty.
+    assert_eq!(app.visible_tasks(0).len(), 1);
+    assert_eq!(app.visible_tasks(1).len(), 0);
+    assert_eq!(app.visible_tasks(2).len(), 0);
+}
+
+#[tokio::test]
+async fn tag_delete_command_removes_tag_globally() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    run_command(&mut app, &services, "tag-new bug red").await;
+    assert_eq!(app.board.all_tags.len(), 1);
+
+    // Attach to a task first so delete-cascade is exercised.
+    dispatch_key(&mut app, &services, KeyCode::Char('t'), KeyModifiers::NONE).await;
+    dispatch_key(&mut app, &services, KeyCode::Char('a'), KeyModifiers::NONE).await;
+    dispatch_key(&mut app, &services, KeyCode::Esc, KeyModifiers::NONE).await;
+
+    run_command(&mut app, &services, "tag-delete bug").await;
+    assert!(app.board.all_tags.is_empty());
+    let any_still_attached = app
+        .board
+        .tasks_by_state
+        .iter()
+        .flatten()
+        .any(|t| !t.tags.is_empty());
+    assert!(!any_still_attached);
+}
+
+#[tokio::test]
+async fn tag_picker_without_tags_stays_in_normal_mode() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    dispatch_key(&mut app, &services, KeyCode::Char('t'), KeyModifiers::NONE).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.tag_picker.is_none());
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("no tags")),
+        "expected status hint, got {:?}",
+        app.status_message,
+    );
 }

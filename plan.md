@@ -558,7 +558,7 @@ submit        = "enter"
 | 4  | `kantui` event loop, Normal mode, basic navigation, log-to-file | ✅ 3 e2e tests: seeded demo project renders, h/j/k/l/gg/G/q navigate, errors log via `CoreError::log_chain`. Binary composes SQLite pool + widgets through a library entry point. |
 | 5  | CRUD on tasks + move/reorder + Insert mode                      | ✅ 9 e2e tests: `n`/`N`/`i` insert flow, `d` delete, `H`/`L` column moves, `K`/`J` within-column shifts. Mode-aware keymap, InputState-backed prompt, controller dispatches actions through `TaskService`. |
 | 6  | Command mode, search, help overlay, `gw` two-char jump          | ✅ 17 e2e tests (+8 new): `:` command parser (`q`, `help`, `new-state`, `rename-state`, `delete-state`, `new-task`), live `/` search with filter preservation, `?` help overlay, `gw` two-char jump across visible tasks. |
-| 7  | Tags + tag picker + filtering by tag                            | Tag entity end-to-end. |
+| 7  | Tags + tag picker + filtering by tag                            | ✅ `t` opens tag-picker overlay; `[letter]` toggles attach/detach; `/#name` filters by tag; `:tag-new` / `:tag-delete` manage tags globally; tag chips render on cards. |
 | 8  | Statistics service + Dashboard widget                           | Per-state sojourn, throughput, WIP view. |
 | 9  | Config file (TOML) + catppuccin-frappe theme + keybind overrides | All keybinds/colors data-driven; invalid config warns, keeps running. |
 | 10 | Postgres adapter + parameterised contract tests                 | Second backend live. |

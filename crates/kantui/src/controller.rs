@@ -3,8 +3,8 @@
 //! surfaced to the caller; the event loop logs + displays them.
 
 use kantui_core::{
-    CoreError, CoreResult, NewState, NewTask, Priority, ProjectRepository, ProjectService, StateId,
-    Task, TaskId, TaskRepository, TaskUpdate,
+    Color, CoreError, CoreResult, NewState, NewTask, Priority, ProjectRepository, ProjectService,
+    StateId, TagRepository, Task, TaskId, TaskRepository, TaskUpdate,
 };
 
 use crate::action::Action;
@@ -164,6 +164,23 @@ pub async fn process(action: Action, app: &mut App, services: &AppServices) -> C
         Action::JumpChar(ch) => jump_char(app, ch),
         Action::JumpCancel => {
             app.jump = None;
+            app.mode = Mode::Normal;
+            Ok(())
+        }
+
+        Action::BeginTagPicker => {
+            app.enter_tag_picker();
+            Ok(())
+        }
+        Action::TagPickerChar(ch) => tag_picker_char(app, services, ch).await,
+        Action::TagPickerCancel => {
+            app.leave_tag_picker();
+            Ok(())
+        }
+
+        Action::OpenDashboard => open_dashboard(app, services).await,
+        Action::CloseDashboard => {
+            app.dashboard = None;
             app.mode = Mode::Normal;
             Ok(())
         }
@@ -464,6 +481,9 @@ async fn execute_command(app: &mut App, services: &AppServices, line: &str) -> C
         "rename-state" => cmd_rename_state(app, services, rest).await,
         "delete-state" => cmd_delete_state(app, services).await,
         "new-task" => cmd_new_task(app, services, rest).await,
+        "tag-new" => cmd_tag_new(app, services, rest).await,
+        "tag-delete" => cmd_tag_delete(app, services, rest).await,
+        "stats" | "dashboard" => open_dashboard(app, services).await,
         other => {
             app.set_status(format!("unknown command: {other}"));
             Ok(())
@@ -534,6 +554,134 @@ async fn cmd_new_task(app: &mut App, services: &AppServices, title: &str) -> Cor
     create_task(app, services, app.focused_column, None, title.to_owned()).await
 }
 
+/// `:tag-new <name> [color]` — create a new tag. `color` is optional; when
+/// omitted the tag uses [`Color::White`].
+async fn cmd_tag_new(app: &mut App, services: &AppServices, args: &str) -> CoreResult<()> {
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or("").trim();
+    if name.is_empty() {
+        app.set_status("usage: :tag-new <name> [color]");
+        return Ok(());
+    }
+    let color = match parts.next().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => match parse_color(raw) {
+            Some(c) => c,
+            None => {
+                app.set_status(format!("unknown color '{raw}'"));
+                return Ok(());
+            }
+        },
+        None => Color::White,
+    };
+    let svc = services.tag_service();
+    let tag = svc.create(name, color).await?;
+    app.board.all_tags.push(tag);
+    app.board.all_tags.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(())
+}
+
+/// `:tag-delete <name>` — delete a tag globally. Detaches from all tasks
+/// via the adapter's foreign-key cascade.
+async fn cmd_tag_delete(app: &mut App, services: &AppServices, args: &str) -> CoreResult<()> {
+    let name = args.trim();
+    if name.is_empty() {
+        app.set_status("usage: :tag-delete <name>");
+        return Ok(());
+    }
+    let svc = services.tag_service();
+    let tag = match services.tag_repo().find_by_name(name).await? {
+        Some(t) => t,
+        None => {
+            app.set_status(format!("no tag named '{name}'"));
+            return Ok(());
+        }
+    };
+    svc.delete(tag.id).await?;
+    reload_board(app, services).await
+}
+
+fn parse_color(raw: &str) -> Option<Color> {
+    match raw.to_ascii_lowercase().as_str() {
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "gray" | "grey" => Some(Color::Gray),
+        _ => None,
+    }
+}
+
+// -----------------------------------------------------------------------
+// Dashboard
+// -----------------------------------------------------------------------
+
+/// Rolling window (in days) shown by the throughput chart.
+const DASHBOARD_THROUGHPUT_DAYS: u32 = 14;
+
+async fn open_dashboard(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let project_id = app.board.project.id;
+    // Convention: the last column is "done". Empty projects (no states) have
+    // no sensible dashboard.
+    let Some(done_state) = app.board.project.states.last().map(|s| s.id) else {
+        app.set_status("project has no states");
+        return Ok(());
+    };
+
+    let stats = services.stats_service();
+    let sojourns = stats.project_sojourns(project_id).await?;
+    let throughput = stats
+        .throughput(project_id, done_state, DASHBOARD_THROUGHPUT_DAYS)
+        .await?;
+
+    app.dashboard = Some(crate::app::DashboardSnapshot {
+        sojourns,
+        throughput,
+        done_state,
+    });
+    app.mode = Mode::Dashboard;
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// Tag picker
+// -----------------------------------------------------------------------
+
+async fn tag_picker_char(app: &mut App, services: &AppServices, ch: char) -> CoreResult<()> {
+    let Some(picker) = app.tag_picker.as_ref() else {
+        app.mode = Mode::Normal;
+        return Ok(());
+    };
+    let target_task = picker.target_task;
+    let Some(row) = picker.rows.iter().find(|r| r.label == ch).cloned() else {
+        app.set_status(format!("no tag for '{ch}'"));
+        return Ok(());
+    };
+
+    let svc = services.tag_service();
+    if row.attached {
+        svc.detach(target_task, row.tag.id).await?;
+    } else {
+        svc.attach(target_task, row.tag.id).await?;
+    }
+
+    // Refresh only the owning column — cheap, preserves selection.
+    let column = app.focused_column;
+    reload_column(app, services, column).await?;
+    update_selection(app, column, Some(target_task));
+
+    // Flip the attached bit so the picker reflects the new state without
+    // being rebuilt.
+    if let Some(state) = app.tag_picker.as_mut()
+        && let Some(r) = state.rows.iter_mut().find(|r| r.tag.id == row.tag.id)
+    {
+        r.attached = !row.attached;
+    }
+    Ok(())
+}
+
 fn project_service(
     services: &AppServices,
 ) -> ProjectService<
@@ -568,8 +716,12 @@ fn column_state_id(app: &App, column: usize) -> CoreResult<StateId> {
 async fn reload_column(app: &mut App, services: &AppServices, column: usize) -> CoreResult<()> {
     let state_id = column_state_id(app, column)?;
     let repo = services.task_repo();
+    let tag_repo = services.tag_repo();
     let mut tasks: Vec<Task> = repo.list_by_state(state_id).await?;
     tasks.sort_by_key(|t| t.position);
+    for task in &mut tasks {
+        task.tags = tag_repo.list_for_task(task.id).await?;
+    }
     if let Some(slot) = app.board.tasks_by_state.get_mut(column) {
         *slot = tasks;
     }
@@ -584,13 +736,18 @@ async fn reload_board(app: &mut App, services: &AppServices) -> CoreResult<()> {
         .ok_or_else(|| CoreError::validation("active project vanished"))?;
     let mut tasks_by_state = Vec::with_capacity(project.states.len());
     let repo = services.task_repo();
+    let tag_repo = services.tag_repo();
     for state in &project.states {
         let mut in_state = repo.list_by_state(state.id).await?;
         in_state.sort_by_key(|t| t.position);
+        for task in &mut in_state {
+            task.tags = tag_repo.list_for_task(task.id).await?;
+        }
         tasks_by_state.push(in_state);
     }
     app.board.project = project;
     app.board.tasks_by_state = tasks_by_state;
+    app.board.all_tags = tag_repo.list().await?;
     app.selected_per_column
         .resize(app.board.tasks_by_state.len(), None);
     let snapshot: Vec<Option<TaskId>> = app.selection_snapshot();

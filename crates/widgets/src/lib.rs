@@ -5,6 +5,7 @@
 //! binary assembles view models from domain entities and hands them in.
 
 pub mod board;
+pub mod dashboard;
 pub mod help;
 pub mod input;
 pub mod jump_labels;
@@ -15,6 +16,7 @@ pub mod theme;
 pub mod view;
 
 pub use board::BoardView;
+pub use dashboard::{Dashboard, DashboardStateRow, DashboardThroughput, DashboardView};
 pub use help::{HelpOverlay, HelpRow};
 pub use input::{Input, InputState};
 pub use jump_labels::{JumpLabelView, JumpLabels};

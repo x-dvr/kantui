@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kantui_core::{
     CoreError, CoreResult, IdGenerator, NewProject, NewTask, Priority, Project, ProjectRepository,
-    ProjectService, Task, TaskId, TaskRepository, TaskService,
+    ProjectService, StateId, StateSojourn, StatsService, Tag, TagId, TagRepository, TagService,
+    Task, TaskId, TaskRepository, TaskService, Throughput,
 };
-use kantui_store::sqlite::{SqliteProjectRepo, SqliteTaskRepo};
+use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SqlitePool, SystemClock, UuidV4};
 use kantui_widgets::InputState;
 use ratatui::Terminal;
@@ -34,6 +35,8 @@ pub enum Mode {
     Command,
     Search,
     Jump,
+    TagPicker,
+    Dashboard,
 }
 
 /// What the user is currently typing into in Insert mode.
@@ -54,7 +57,18 @@ pub enum PendingEdit {
 pub struct BoardSnapshot {
     pub project: Project,
     /// Tasks indexed by the *position* of their state in `project.states`.
+    /// Each [`Task`]'s `tags` field is populated at load time.
     pub tasks_by_state: Vec<Vec<Task>>,
+    /// All tags defined in the DB, sorted by name. Used by the tag picker and
+    /// to resolve [`TagId`] → [`Tag`] during rendering.
+    pub all_tags: Vec<Tag>,
+}
+
+impl BoardSnapshot {
+    #[must_use]
+    pub fn tag_by_id(&self, id: TagId) -> Option<&Tag> {
+        self.all_tags.iter().find(|t| t.id == id)
+    }
 }
 
 pub struct App {
@@ -74,6 +88,38 @@ pub struct App {
     pub search_query: Option<String>,
     pub show_help: bool,
     pub jump: Option<JumpState>,
+    /// Active tag-picker overlay. Populated when the user presses `t` on a
+    /// selected task; consumed as they press a single-char label to toggle.
+    pub tag_picker: Option<TagPickerState>,
+    /// Most-recent dashboard snapshot, rebuilt each time the overlay is
+    /// opened.
+    pub dashboard: Option<DashboardSnapshot>,
+}
+
+/// Stats rendered by the Dashboard overlay. Assembled from
+/// [`StatsService::project_sojourns`] and [`StatsService::throughput`].
+#[derive(Debug, Clone)]
+pub struct DashboardSnapshot {
+    pub sojourns: Vec<StateSojourn>,
+    pub throughput: Throughput,
+    /// The state used as "done" — stored so the view can skip rebuild math.
+    pub done_state: StateId,
+}
+
+/// State for the tag-picker overlay. Each row maps a single-character label
+/// to a tag and records whether the currently-selected task has that tag
+/// attached at the moment the picker was opened.
+#[derive(Debug, Clone)]
+pub struct TagPickerState {
+    pub target_task: TaskId,
+    pub rows: Vec<TagPickerRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TagPickerRow {
+    pub label: char,
+    pub tag: Tag,
+    pub attached: bool,
 }
 
 /// Active jump-label overlay. Populated when the user presses `gw` and
@@ -114,10 +160,16 @@ impl App {
             search_query: None,
             show_help: false,
             jump: None,
+            tag_picker: None,
+            dashboard: None,
         }
     }
 
     /// Tasks visible in `column` after applying the active filter.
+    ///
+    /// Filter syntax: a leading `#` filters by tag name (case-insensitive
+    /// substring of any attached tag); otherwise the query is matched against
+    /// the task title.
     #[must_use]
     pub fn visible_tasks(&self, column: usize) -> Vec<&Task> {
         let full = self
@@ -127,7 +179,13 @@ impl App {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         match self.active_filter() {
-            Some(q) => full.iter().filter(|t| title_matches(&t.title, q)).collect(),
+            Some(q) => match q.strip_prefix('#') {
+                Some(tag_query) => full
+                    .iter()
+                    .filter(|t| task_matches_tag(t, &self.board, tag_query))
+                    .collect(),
+                None => full.iter().filter(|t| title_matches(&t.title, q)).collect(),
+            },
             None => full.iter().collect(),
         }
     }
@@ -262,7 +320,45 @@ impl App {
             *slot = Some(index);
         }
     }
+
+    /// Open the tag picker for the currently-selected task. Returns `false`
+    /// if no task is selected or no tags exist yet.
+    pub fn enter_tag_picker(&mut self) -> bool {
+        let Some(task) = self.selected_task() else {
+            self.set_status("no task selected");
+            return false;
+        };
+        if self.board.all_tags.is_empty() {
+            self.set_status("no tags yet — use `:tag-new <name>`");
+            return false;
+        }
+        let target_task = task.id;
+        let attached: std::collections::HashSet<TagId> = task.tags.iter().copied().collect();
+        let rows: Vec<TagPickerRow> = self
+            .board
+            .all_tags
+            .iter()
+            .take(TAG_PICKER_LABELS.len())
+            .zip(TAG_PICKER_LABELS.chars())
+            .map(|(tag, label)| TagPickerRow {
+                label,
+                tag: tag.clone(),
+                attached: attached.contains(&tag.id),
+            })
+            .collect();
+        self.tag_picker = Some(TagPickerState { target_task, rows });
+        self.mode = Mode::TagPicker;
+        true
+    }
+
+    pub fn leave_tag_picker(&mut self) {
+        self.tag_picker = None;
+        self.mode = Mode::Normal;
+    }
 }
+
+/// Single-character labels used for the tag picker rows (up to 26 tags).
+const TAG_PICKER_LABELS: &str = "abcdefghijklmnopqrstuvwxyz";
 
 fn title_matches(title: &str, query: &str) -> bool {
     let q = query.trim();
@@ -270,6 +366,20 @@ fn title_matches(title: &str, query: &str) -> bool {
         return true;
     }
     title.to_lowercase().contains(&q.to_lowercase())
+}
+
+fn task_matches_tag(task: &Task, board: &BoardSnapshot, query: &str) -> bool {
+    let q = query.trim();
+    // `#` with no text matches any task that carries at least one tag.
+    if q.is_empty() {
+        return !task.tags.is_empty();
+    }
+    let q = q.to_lowercase();
+    task.tags.iter().any(|id| {
+        board
+            .tag_by_id(*id)
+            .is_some_and(|tag| tag.name.to_lowercase().contains(&q))
+    })
 }
 
 /// Services wired at the composition root. Cheap to clone because repos are
@@ -299,10 +409,25 @@ impl AppServices {
     }
 
     #[must_use]
+    pub fn tag_repo(&self) -> SqliteTagRepo {
+        SqliteTagRepo::new(self.pool.clone())
+    }
+
+    #[must_use]
     pub fn task_service(
         &self,
     ) -> TaskService<SqliteProjectRepo, SqliteTaskRepo, SystemClock, UuidV4> {
         TaskService::new(self.project_repo(), self.task_repo(), self.clock, self.ids)
+    }
+
+    #[must_use]
+    pub fn tag_service(&self) -> TagService<SqliteTagRepo, UuidV4> {
+        TagService::new(self.tag_repo(), self.ids)
+    }
+
+    #[must_use]
+    pub fn stats_service(&self) -> StatsService<SqliteTaskRepo, SystemClock> {
+        StatsService::new(self.task_repo(), self.clock)
     }
 }
 
@@ -352,18 +477,24 @@ fn io_to_core(err: std::io::Error) -> CoreError {
 pub async fn load_board(
     projects: &impl ProjectRepository,
     tasks: &impl TaskRepository,
+    tags: &impl TagRepository,
     project: Project,
 ) -> CoreResult<BoardSnapshot> {
     let mut tasks_by_state = Vec::with_capacity(project.states.len());
     for state in &project.states {
         let mut in_state = tasks.list_by_state(state.id).await?;
         in_state.sort_by_key(|t| t.position);
+        for task in &mut in_state {
+            task.tags = tags.list_for_task(task.id).await?;
+        }
         tasks_by_state.push(in_state);
     }
+    let all_tags = tags.list().await?;
     let _ = projects;
     Ok(BoardSnapshot {
         project,
         tasks_by_state,
+        all_tags,
     })
 }
 

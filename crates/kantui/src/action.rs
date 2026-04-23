@@ -55,4 +55,18 @@ pub enum Action {
     // --- Jump-mode key events ---
     JumpChar(char),
     JumpCancel,
+
+    // --- Tag-picker mode ---
+    /// Open the tag-picker overlay for the currently-selected task.
+    BeginTagPicker,
+    /// Press a single-char label to toggle the matching tag on/off.
+    TagPickerChar(char),
+    /// Dismiss the picker without changes.
+    TagPickerCancel,
+
+    // --- Dashboard overlay ---
+    /// Refresh and open the statistics dashboard.
+    OpenDashboard,
+    /// Dismiss the dashboard.
+    CloseDashboard,
 }

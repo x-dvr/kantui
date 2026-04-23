@@ -33,6 +33,14 @@ impl Keymap {
                 self.pending = None;
                 dispatch_jump(key)
             }
+            Mode::TagPicker => {
+                self.pending = None;
+                dispatch_tag_picker(key)
+            }
+            Mode::Dashboard => {
+                self.pending = None;
+                dispatch_dashboard(key)
+            }
         }
     }
 
@@ -46,6 +54,7 @@ impl Keymap {
             return match (prefix, key.code) {
                 ('g', KeyCode::Char('g')) => Action::SelectFirstTask,
                 ('g', KeyCode::Char('w')) => Action::BeginJump,
+                ('g', KeyCode::Char('s')) => Action::OpenDashboard,
                 _ => Action::Noop,
             };
         }
@@ -76,6 +85,7 @@ impl Keymap {
             (KeyCode::Char('L'), _) => Action::MoveTaskNextColumn,
             (KeyCode::Char('K'), _) => Action::ShiftTaskUp,
             (KeyCode::Char('J'), _) => Action::ShiftTaskDown,
+            (KeyCode::Char('t'), KeyModifiers::NONE) => Action::BeginTagPicker,
 
             // Prompt-mode entries.
             (KeyCode::Char(':'), _) => Action::BeginCommand,
@@ -112,6 +122,26 @@ fn dispatch_jump(key: KeyEvent) -> Action {
         (KeyCode::Char(ch), m) if m == KeyModifiers::NONE || m == KeyModifiers::SHIFT => {
             Action::JumpChar(ch.to_ascii_lowercase())
         }
+        _ => Action::Noop,
+    }
+}
+
+fn dispatch_tag_picker(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => Action::TagPickerCancel,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::TagPickerCancel,
+        (KeyCode::Char(ch), m) if m == KeyModifiers::NONE || m == KeyModifiers::SHIFT => {
+            Action::TagPickerChar(ch.to_ascii_lowercase())
+        }
+        _ => Action::Noop,
+    }
+}
+
+fn dispatch_dashboard(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => Action::CloseDashboard,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::CloseDashboard,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::CloseDashboard,
         _ => Action::Noop,
     }
 }

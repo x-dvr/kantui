@@ -8,7 +8,7 @@ mod tag;
 mod task;
 mod time;
 
-pub use history::{StateSojourn, TaskTransition};
+pub use history::{StateSojourn, TaskTransition, Throughput};
 pub use ids::{EntityId, ProjectId, StateId, TagId, TaskId};
 pub use project::Project;
 pub use state::State;

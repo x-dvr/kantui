@@ -178,6 +178,49 @@ async fn sojourn_accumulates_in_former_state() {
 }
 
 #[tokio::test]
+async fn throughput_buckets_completions_by_day() {
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    let ctx = setup().await;
+    let a = ctx
+        .tasks
+        .create(NewTask::new(ctx.project.id, ctx.todo, "A"))
+        .await
+        .unwrap();
+    let b = ctx
+        .tasks
+        .create(NewTask::new(ctx.project.id, ctx.todo, "B"))
+        .await
+        .unwrap();
+    let c = ctx
+        .tasks
+        .create(NewTask::new(ctx.project.id, ctx.todo, "C"))
+        .await
+        .unwrap();
+    let d = ctx
+        .tasks
+        .create(NewTask::new(ctx.project.id, ctx.todo, "D"))
+        .await
+        .unwrap();
+
+    ctx.clock.advance(DAY);
+    ctx.tasks.move_task(a.id, ctx.done, None).await.unwrap();
+    ctx.clock.advance(DAY);
+    ctx.tasks.move_task(b.id, ctx.done, None).await.unwrap();
+    ctx.clock.advance(DAY);
+    ctx.tasks.move_task(c.id, ctx.done, None).await.unwrap();
+    ctx.tasks.move_task(d.id, ctx.done, None).await.unwrap();
+
+    let t = ctx
+        .stats
+        .throughput(ctx.project.id, ctx.done, 3)
+        .await
+        .unwrap();
+    assert_eq!(t.total, 4);
+    assert_eq!(t.per_day, vec![1, 1, 2]);
+}
+
+#[tokio::test]
 async fn adding_after_anchor_preserves_order() {
     let ctx = setup().await;
     let _a = ctx

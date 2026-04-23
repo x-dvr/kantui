@@ -18,3 +18,12 @@ pub struct StateSojourn {
     pub total: Duration,
     pub count: u32,
 }
+
+/// Throughput over a rolling day window: total completions plus per-day
+/// buckets where `per_day[0]` is the oldest day and the last entry is today.
+#[derive(Debug, Clone)]
+pub struct Throughput {
+    pub done_state: StateId,
+    pub total: u32,
+    pub per_day: Vec<u32>,
+}
