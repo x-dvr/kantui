@@ -56,10 +56,10 @@ impl Mode {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Normal => "NOR",
-            Mode::Insert => "INS",
-            Mode::Command => "CMD",
-            Mode::Search => "SEA",
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Command => "COMMAND",
+            Mode::Search => "SEARCH",
         }
     }
 }

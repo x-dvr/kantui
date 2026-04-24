@@ -3,7 +3,7 @@
 /// A single discrete action resulting from a key (or key chord). Some
 /// actions are pure state mutations; others require the controller to call
 /// into `core` services asynchronously.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Do nothing. Used for unmapped keys and for the quiescent path after
     /// a chord prefix (e.g. `g` by itself).
@@ -51,6 +51,8 @@ pub enum Action {
     BeginSearch,
     BeginJump,
     ToggleHelp,
+    /// Esc in Normal mode: close any overlay (help, ...), else noop.
+    Escape,
 
     // --- Jump-mode key events ---
     JumpChar(char),

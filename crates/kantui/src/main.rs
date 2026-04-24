@@ -6,7 +6,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use kantui::{app, cli, logging, tui};
+use kantui::{app, cli, config as app_config, logging, tui};
 use kantui_core::{CoreError, CoreResult};
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SystemClock, UuidV4, sqlite};
@@ -15,6 +15,22 @@ use kantui_store::{SystemClock, UuidV4, sqlite};
 async fn main() -> ExitCode {
     let args = cli::Args::parse();
     let resolved = args.resolve();
+
+    if resolved.gen_conf {
+        return match app_config::write_default(&resolved.config_path) {
+            Ok(()) => {
+                println!("wrote default config to {}", resolved.config_path.display());
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!(
+                    "failed to write config to {}: {err}",
+                    resolved.config_path.display()
+                );
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     if let Err(err) = logging::init(&resolved.log_path, &resolved.log_level) {
         eprintln!(
@@ -39,6 +55,11 @@ async fn main() -> ExitCode {
 async fn run(resolved: cli::Resolved) -> CoreResult<()> {
     tracing::info!(db_url = %resolved.db_url, "starting kantui");
 
+    let (config, warnings) = app_config::load(&resolved.config_path);
+    for warning in &warnings {
+        tracing::warn!(config_path = %resolved.config_path.display(), "{warning}");
+    }
+
     let pool = sqlite::connect(&resolved.db_url).await?;
 
     let project = if resolved.seed_demo {
@@ -51,7 +72,7 @@ async fn run(resolved: cli::Resolved) -> CoreResult<()> {
     let projects_repo = SqliteProjectRepo::new(pool.clone());
     let tags_repo = SqliteTagRepo::new(pool.clone());
     let board = app::load_board(&projects_repo, &tasks_repo, &tags_repo, project).await?;
-    let mut app_state = app::App::new(board);
+    let mut app_state = app::App::with_config(board, &config);
     let services = app::AppServices::new(pool.clone(), SystemClock::new(), UuidV4::new());
 
     let mut terminal = tui::init().map_err(io_to_core)?;

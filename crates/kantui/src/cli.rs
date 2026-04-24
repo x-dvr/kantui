@@ -22,6 +22,15 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
+    /// Path to the TOML config file. Defaults to
+    /// `<config>/kantui/config.toml`.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Write a default config file to the config path and exit.
+    #[arg(long, default_value_t = false)]
+    pub gen_conf: bool,
+
     /// On first run (empty DB), also seed a few sample tasks. Without this,
     /// the default project is created with empty columns.
     #[arg(long, default_value_t = false)]
@@ -33,6 +42,8 @@ pub struct Resolved {
     pub db_url: String,
     pub log_path: PathBuf,
     pub log_level: String,
+    pub config_path: PathBuf,
+    pub gen_conf: bool,
     pub seed_demo: bool,
 }
 
@@ -42,11 +53,16 @@ impl Args {
 
         let db_url = self.db.unwrap_or_else(|| default_db_url(dirs.as_ref()));
         let log_path = self.log.unwrap_or_else(|| default_log_path(dirs.as_ref()));
+        let config_path = self
+            .config
+            .unwrap_or_else(|| default_config_path(dirs.as_ref()));
 
         Resolved {
             db_url,
             log_path,
             log_level: self.log_level,
+            config_path,
+            gen_conf: self.gen_conf,
             seed_demo: self.seed_demo,
         }
     }
@@ -62,4 +78,9 @@ fn default_db_url(dirs: Option<&ProjectDirs>) -> String {
 fn default_log_path(dirs: Option<&ProjectDirs>) -> PathBuf {
     dirs.map(|d| d.cache_dir().join("kantui.log"))
         .unwrap_or_else(|| PathBuf::from("./kantui.log"))
+}
+
+fn default_config_path(dirs: Option<&ProjectDirs>) -> PathBuf {
+    dirs.map(|d| d.config_dir().join("config.toml"))
+        .unwrap_or_else(|| PathBuf::from("./kantui.toml"))
 }

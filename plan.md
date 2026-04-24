@@ -11,7 +11,7 @@ A terminal kanban board written in Rust using [ratatui](https://ratatui.rs/), st
 - Vim-inspired modal keyboard control (no mouse required).
 - CRUD on **projects** (boards), **states** (workflow stages rendered as columns), **tasks**, and **tags**.
 - Move tasks between states; reorder within a state.
-- Pluggable storage backend: SQLite (default, file-based) or PostgreSQL.
+- SQLite (file-based) storage.
 - Strict hexagonal architecture: domain core has **zero** dependencies on infrastructure, UI, or external crates beyond `std`.
 - Custom error types must be defined in core crate. They should be able to incapsulate cause and provide nice support for logging (into file). Other crates must convert own errors to domain errors.
 - should have config file to change keybinds color theme (catppuccin frappe by default)
@@ -65,12 +65,10 @@ kantui/
 │   ├── store/                 # adapter: implements core::ports using sqlx
 │   │   ├── Cargo.toml
 │   │   ├── migrations/
-│   │   │   ├── sqlite/
-│   │   │   └── postgres/
+│   │   │   └── sqlite/
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── sqlite/        # gated behind feature "sqlite"
-│   │       ├── postgres/      # gated behind feature "postgres"
+│   │       ├── sqlite/        # SQLite adapter
 │   │       └── mapping.rs     # row <-> domain conversions
 │   ├── widgets/               # reusable ratatui widgets
 │   │   ├── Cargo.toml
@@ -312,10 +310,9 @@ pub type CoreResult<T> = Result<T, CoreError>;
 
 ## 4. Storage adapter (`store`)
 
-- Uses `sqlx` with the `runtime-tokio` feature.
-- Features: `sqlite` (default), `postgres`. Both may be compiled in; the binary picks one at runtime based on config.
-- One module per backend with a shared `mapping.rs` converting `sqlx::Row` ↔ domain structs.
-- Migrations live alongside code (`migrations/sqlite`, `migrations/postgres`) and are applied on startup via `sqlx::migrate!`.
+- Uses `sqlx` with the `runtime-tokio` feature and the `sqlite` driver.
+- `mapping.rs` converts `sqlx::Row` ↔ domain structs.
+- Migrations live under `migrations/sqlite` and are applied on startup via `sqlx::migrate!`.
 
 ### Schema sketch
 
@@ -470,7 +467,6 @@ State mutations go through `actions.rs` → `services` (from `core`) → `store`
 ### CLI (via `clap`)
 
 - `--db sqlite:///path/to/kantui.db` (default: `~/.local/share/kantui/kantui.db`)
-- `--db postgres://user:pass@host/db`
 - `--config path/to/config.toml` (default: `~/.config/kantui/config.toml`)
 - `--log path/to/kantui.log` (default: `~/.cache/kantui/kantui.log`)
 
@@ -540,10 +536,10 @@ submit        = "enter"
 ## 8. Testing strategy
 
 - **`core` unit tests**: pure Rust, no async runtime needed for domain logic; services tested with in-memory fake repos living in `core/tests/fakes/` (they implement the port traits).
-- **`store` integration tests**: spin up an in-memory SQLite (`sqlite::memory:`) and run the full repo contract; a shared test harness in `store/tests/contract.rs` is parameterised across backends so Postgres tests can be gated behind `--features postgres-tests`.
+- **`store` integration tests**: spin up an in-memory SQLite (`sqlite::memory:`) and run the full repo contract.
 - **`widgets` snapshot tests**: use `ratatui::backend::TestBackend` + `insta` to diff buffers.
 - **`kantui` end-to-end**: drive the app with synthetic key events against an in-memory repo, assert the rendered buffer.
-- CI runs `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`, and the Postgres tests inside a `services: postgres` job.
+- CI runs `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`.
 
 ---
 
@@ -560,9 +556,8 @@ submit        = "enter"
 | 6  | Command mode, search, help overlay, `gw` two-char jump          | ✅ 17 e2e tests (+8 new): `:` command parser (`q`, `help`, `new-state`, `rename-state`, `delete-state`, `new-task`), live `/` search with filter preservation, `?` help overlay, `gw` two-char jump across visible tasks. |
 | 7  | Tags + tag picker + filtering by tag                            | ✅ `t` opens tag-picker overlay; `[letter]` toggles attach/detach; `/#name` filters by tag; `:tag-new` / `:tag-delete` manage tags globally; tag chips render on cards. |
 | 8  | Statistics service + Dashboard widget                           | Per-state sojourn, throughput, WIP view. |
-| 9  | Config file (TOML) + catppuccin-frappe theme + keybind overrides | All keybinds/colors data-driven; invalid config warns, keeps running. |
-| 10 | Postgres adapter + parameterised contract tests                 | Second backend live. |
-| 11 | Polish, README, packaging                                       | v0.1.0 release. |
+| 9  | Config file (TOML) + catppuccin-frappe theme + keybind overrides | ✅ 27 lib tests (11 config + 10 keybinds + others): TOML loader with lenient warnings, `--config`/`--gen-conf` CLI flags, data-driven `Keybinds` (chord/single/modifier parsing), `[theme.overrides]` hex/named colour overrides; unknown sections/keys/actions/themes warn and fall back. |
+| 10 | Polish, README, packaging                                       | ✅ README.md, GitHub Actions CI (fmt/clippy/test), workspace release metadata (authors/desc/keywords/categories). All postgres plumbing removed; 102 tests green under `cargo test --workspace`. |
 
 Each milestone ends with a green workspace (`cargo test --workspace`) and a runnable binary.
 
@@ -608,14 +603,9 @@ async-trait = { workspace = true }
 
 ### `store`
 ```toml
-[features]
-default  = ["sqlite"]
-sqlite   = ["sqlx/sqlite"]
-postgres = ["sqlx/postgres"]
-
 [dependencies]
 core        = { path = "../core" }
-sqlx        = { workspace = true }
+sqlx        = { workspace = true, features = ["sqlite"] }
 tokio       = { workspace = true }
 async-trait = { workspace = true }
 thiserror   = { workspace = true }
@@ -651,7 +641,7 @@ uuid               = { workspace = true }             # concrete IdGenerator
 
 ## 11. Open questions (decide during M0–M1)
 
-- Async or sync repo traits? — plan uses `async_trait` so the same trait covers SQLite and Postgres; the cost is an extra heap box per call, acceptable for a TUI.
+- Async or sync repo traits? — plan uses `async_trait` so repos can swap backends without changing callers; the cost is an extra heap box per call, acceptable for a TUI.
 - UUID v4 vs ULID for `EntityId` bytes? — UUID v4 in v1 (the `store` adapter decides); `core` only sees opaque `[u8; 16]`.
 - Event-sourcing vs state-based persistence? — hybrid: live state is row-based (`tasks`), transitions are an append-only log (`task_transitions`). Enough for stats without the complexity of full event sourcing.
 - Should "currently-occupied state time" be materialised or always computed? — always computed from `now - last_transition.at` in v1; if the dashboard gets slow, cache it in a background task.

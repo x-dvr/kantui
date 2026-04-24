@@ -2,4 +2,4 @@
 source: crates/widgets/tests/snapshots.rs
 expression: out
 ---
- INS  kantui › Todo                             0/0 · 10:42
+ INSERT  kantui › Todo                          0/0 · 10:42

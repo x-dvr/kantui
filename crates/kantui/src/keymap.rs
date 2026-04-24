@@ -7,19 +7,40 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::Action;
 use crate::app::Mode;
+use crate::keybinds::{Binding, Keybinds};
 
-/// Result of dispatching a key: either an action to run or a chord-pending
-/// indicator so the UI can show it.
-#[derive(Debug, Default)]
+/// Mode-aware dispatcher. Holds the configured [`Keybinds`] plus the in-flight
+/// chord prefix (for keys like `gg`).
+#[derive(Debug)]
 pub struct Keymap {
-    /// Currently-accumulated chord prefix (e.g. Some('g') after pressing `g`).
-    pending: Option<char>,
+    binds: Keybinds,
+    pending: Option<KeyEvent>,
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Keymap {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_binds(Keybinds::vim_default())
+    }
+
+    #[must_use]
+    pub fn with_binds(binds: Keybinds) -> Self {
+        Self {
+            binds,
+            pending: None,
+        }
+    }
+
+    /// Swap in a new binding table. Clears any pending chord.
+    pub fn set_binds(&mut self, binds: Keybinds) {
+        self.binds = binds;
+        self.pending = None;
     }
 
     pub fn dispatch(&mut self, mode: Mode, key: KeyEvent) -> Action {
@@ -45,55 +66,37 @@ impl Keymap {
     }
 
     fn dispatch_normal(&mut self, key: KeyEvent) -> Action {
+        // Esc clears any pending chord and asks the controller to dismiss
+        // overlays (help, ...).
         if key.code == KeyCode::Esc {
             self.pending = None;
-            return Action::Noop;
+            return Action::Escape;
         }
 
-        if let Some(prefix) = self.pending.take() {
-            return match (prefix, key.code) {
-                ('g', KeyCode::Char('g')) => Action::SelectFirstTask,
-                ('g', KeyCode::Char('w')) => Action::BeginJump,
-                ('g', KeyCode::Char('s')) => Action::OpenDashboard,
-                _ => Action::Noop,
-            };
+        // Ctrl-C is an unconditional quit; it never participates in chords.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.pending = None;
+            return Action::Quit;
         }
 
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::Quit,
-            (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, _) => {
-                Action::FocusPrevColumn
-            }
-            (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, _) => {
-                Action::FocusNextColumn
-            }
-            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => Action::SelectNextTask,
-            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => Action::SelectPrevTask,
-            (KeyCode::Char('G'), _) => Action::SelectLastTask,
-            (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                self.pending = Some('g');
-                Action::Noop
-            }
-
-            // Task CRUD & movement.
-            (KeyCode::Char('n'), KeyModifiers::NONE) => Action::BeginNewTaskBelow,
-            (KeyCode::Char('N'), _) => Action::BeginNewTaskAbove,
-            (KeyCode::Char('i'), KeyModifiers::NONE) => Action::BeginRenameTask,
-            (KeyCode::Char('d'), KeyModifiers::NONE) => Action::DeleteTask,
-            (KeyCode::Char('H'), _) => Action::MoveTaskPrevColumn,
-            (KeyCode::Char('L'), _) => Action::MoveTaskNextColumn,
-            (KeyCode::Char('K'), _) => Action::ShiftTaskUp,
-            (KeyCode::Char('J'), _) => Action::ShiftTaskDown,
-            (KeyCode::Char('t'), KeyModifiers::NONE) => Action::BeginTagPicker,
-
-            // Prompt-mode entries.
-            (KeyCode::Char(':'), _) => Action::BeginCommand,
-            (KeyCode::Char('/'), _) => Action::BeginSearch,
-            (KeyCode::Char('?'), _) => Action::ToggleHelp,
-
-            _ => Action::Noop,
+        // Chord resolution: if we had a pending prefix, try to match a chord.
+        if let Some(first) = self.pending.take()
+            && let Some(action) = match_chord(&self.binds, &first, &key)
+        {
+            return action;
         }
+
+        // Single-key match.
+        if let Some(action) = match_single(&self.binds, &key) {
+            return action;
+        }
+
+        // First half of a chord? Stash and wait for the second key.
+        if self.binds.is_chord_prefix(&key) {
+            self.pending = Some(key);
+        }
+
+        Action::Noop
     }
 }
 
@@ -144,4 +147,59 @@ fn dispatch_dashboard(key: KeyEvent) -> Action {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::CloseDashboard,
         _ => Action::Noop,
     }
+}
+
+/// Walk every action's bindings and return the matching single-key action.
+fn match_single(binds: &Keybinds, key: &KeyEvent) -> Option<Action> {
+    for (list, action) in entries(binds) {
+        for b in list {
+            if let Binding::Single(k) = b
+                && k.matches(key)
+            {
+                return Some(action);
+            }
+        }
+    }
+    None
+}
+
+/// Walk every action's bindings and return the matching chord action.
+fn match_chord(binds: &Keybinds, first: &KeyEvent, second: &KeyEvent) -> Option<Action> {
+    for (list, action) in entries(binds) {
+        for b in list {
+            if let Binding::Chord(a, z) = b
+                && a.matches(first)
+                && z.matches(second)
+            {
+                return Some(action);
+            }
+        }
+    }
+    None
+}
+
+fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 21] {
+    [
+        (&b.quit, Action::Quit),
+        (&b.focus_prev_column, Action::FocusPrevColumn),
+        (&b.focus_next_column, Action::FocusNextColumn),
+        (&b.select_next_task, Action::SelectNextTask),
+        (&b.select_prev_task, Action::SelectPrevTask),
+        (&b.select_first_task, Action::SelectFirstTask),
+        (&b.select_last_task, Action::SelectLastTask),
+        (&b.begin_jump, Action::BeginJump),
+        (&b.open_dashboard, Action::OpenDashboard),
+        (&b.begin_new_task_below, Action::BeginNewTaskBelow),
+        (&b.begin_new_task_above, Action::BeginNewTaskAbove),
+        (&b.begin_rename_task, Action::BeginRenameTask),
+        (&b.delete_task, Action::DeleteTask),
+        (&b.move_task_prev_column, Action::MoveTaskPrevColumn),
+        (&b.move_task_next_column, Action::MoveTaskNextColumn),
+        (&b.shift_task_up, Action::ShiftTaskUp),
+        (&b.shift_task_down, Action::ShiftTaskDown),
+        (&b.begin_tag_picker, Action::BeginTagPicker),
+        (&b.begin_command, Action::BeginCommand),
+        (&b.begin_search, Action::BeginSearch),
+        (&b.toggle_help, Action::ToggleHelp),
+    ]
 }

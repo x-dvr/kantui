@@ -9,15 +9,9 @@ license.workspace = true
 name = "kantui_store"
 path = "src/lib.rs"
 
-[features]
-default        = ["sqlite"]
-sqlite         = ["sqlx/sqlite", "sqlx/migrate"]
-postgres       = ["sqlx/postgres", "sqlx/migrate"]
-postgres-tests = ["postgres"]
-
 [dependencies]
 kantui-core = { path = "../core" }
-sqlx        = { workspace = true }
+sqlx        = { workspace = true, features = ["sqlite", "migrate"] }
 tokio       = { workspace = true }
 async-trait = { workspace = true }
 uuid        = { workspace = true }

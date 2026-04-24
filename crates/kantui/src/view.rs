@@ -22,7 +22,7 @@ const TASK_CARD_ROWS: u16 = 6;
 const MIN_COLUMN_WIDTH: u16 = 20;
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
-    let theme = Theme::default();
+    let theme = app.theme;
     let area = frame.area();
 
     let bg = Paragraph::new(Line::from("")).style(Style::default().bg(theme.background));
@@ -195,7 +195,13 @@ fn render_board(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
             name: state.name.as_str(),
             wip_limit: state.wip_limit,
             tasks: cards_by_column.get(i).map(Vec::as_slice).unwrap_or(&[]),
-            selected: app.selected_per_column.get(i).copied().flatten(),
+            // Only the focused column shows a highlighted task — selection is
+            // a single cursor, not one-per-column state.
+            selected: if i == app.focused_column {
+                app.selected_per_column.get(i).copied().flatten()
+            } else {
+                None
+            },
         })
         .collect();
 

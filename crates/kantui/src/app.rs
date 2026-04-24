@@ -13,10 +13,11 @@ use kantui_core::{
 };
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SqlitePool, SystemClock, UuidV4};
-use kantui_widgets::InputState;
+use kantui_widgets::{InputState, Theme};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
+use crate::config::Config;
 use crate::controller;
 use crate::event::{AppEvent, Events};
 use crate::keymap::Keymap;
@@ -94,6 +95,8 @@ pub struct App {
     /// Most-recent dashboard snapshot, rebuilt each time the overlay is
     /// opened.
     pub dashboard: Option<DashboardSnapshot>,
+    /// Rendering palette — resolved from config at startup.
+    pub theme: Theme,
 }
 
 /// Stats rendered by the Dashboard overlay. Assembled from
@@ -142,6 +145,10 @@ pub struct JumpLabel {
 
 impl App {
     pub fn new(board: BoardSnapshot) -> Self {
+        Self::with_config(board, &Config::default())
+    }
+
+    pub fn with_config(board: BoardSnapshot, config: &Config) -> Self {
         let selected_per_column = board
             .tasks_by_state
             .iter()
@@ -153,7 +160,7 @@ impl App {
             focused_column: 0,
             selected_per_column,
             board,
-            keymap: Keymap::new(),
+            keymap: Keymap::with_binds(config.keybinds.clone()),
             status_message: None,
             input: InputState::new(),
             pending_edit: None,
@@ -162,6 +169,7 @@ impl App {
             jump: None,
             tag_picker: None,
             dashboard: None,
+            theme: config.theme,
         }
     }
 

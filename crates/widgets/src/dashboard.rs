@@ -195,11 +195,7 @@ fn render_sparkline(area: Rect, buf: &mut Buffer, per_day: &[u32], theme: &Theme
     let col_width = (area.width / days).max(1);
 
     for (i, &count) in per_day.iter().enumerate() {
-        let bar_h = if max == 0 {
-            0
-        } else {
-            ((count as u32 * height as u32) / max as u32) as u16
-        };
+        let bar_h = (count * height as u32).checked_div(max).unwrap_or(0) as u16;
         let x = area.x + i as u16 * col_width;
         if x >= area.x + area.width {
             break;

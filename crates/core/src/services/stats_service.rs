@@ -69,12 +69,11 @@ where
             if t.to_state != done_state {
                 continue;
             }
-            let at_secs = t
-                .at
-                .to_system_time()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_secs();
+            let at_secs =
+                t.at.to_system_time()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_secs();
             let at_day = at_secs / SECS_PER_DAY;
             if at_day > today_day {
                 continue;

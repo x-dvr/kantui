@@ -160,6 +160,12 @@ pub async fn process(action: Action, app: &mut App, services: &AppServices) -> C
             app.show_help = !app.show_help;
             Ok(())
         }
+        Action::Escape => {
+            if app.show_help {
+                app.show_help = false;
+            }
+            Ok(())
+        }
 
         Action::JumpChar(ch) => jump_char(app, ch),
         Action::JumpCancel => {

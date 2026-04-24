@@ -1,5 +1,3 @@
-#![cfg(feature = "sqlite")]
-
 use std::time::{Duration, SystemTime};
 
 use kantui_core::{

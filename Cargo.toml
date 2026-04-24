@@ -11,6 +11,10 @@ members = [
 edition      = "2024"
 rust-version = "1.85"
 license      = "MIT OR Apache-2.0"
+authors      = ["Denis Rodin <denis.rodin@proton.me>"]
+description  = "Terminal kanban board with Vim-inspired modal control."
+keywords     = ["tui", "kanban", "productivity", "ratatui", "terminal"]
+categories   = ["command-line-utilities"]
 
 [workspace.dependencies]
 # core: only async-trait — everything else is for adapters / binary.
