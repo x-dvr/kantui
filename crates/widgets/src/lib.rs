@@ -12,6 +12,7 @@ pub mod jump_labels;
 pub mod state_column;
 pub mod status_bar;
 pub mod task_card;
+pub mod task_detail;
 pub mod theme;
 pub mod view;
 
@@ -23,5 +24,6 @@ pub use jump_labels::{JumpLabelView, JumpLabels};
 pub use state_column::StateColumn;
 pub use status_bar::{StatusBar, StatusBarView, StatusCounts};
 pub use task_card::TaskCard;
+pub use task_detail::{TaskDetail, TaskDetailView};
 pub use theme::{Theme, map_domain_color};
 pub use view::{BoardViewModel, Mode, StateColumnView, TagChip, TaskCardView};

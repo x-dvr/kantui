@@ -62,6 +62,10 @@ impl Keymap {
                 self.pending = None;
                 dispatch_dashboard(key)
             }
+            Mode::TaskDetail => {
+                self.pending = None;
+                dispatch_task_detail(key)
+            }
         }
     }
 
@@ -149,6 +153,20 @@ fn dispatch_dashboard(key: KeyEvent) -> Action {
     }
 }
 
+fn dispatch_task_detail(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => Action::CloseTaskDetail,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::CloseTaskDetail,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::CloseTaskDetail,
+        (KeyCode::Char('p'), KeyModifiers::NONE) => Action::CycleTaskPriority,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::BeginEditDescription,
+        (KeyCode::Char('D'), _) => Action::BeginEditDueDate,
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::BeginRenameTask,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::BeginTagPicker,
+        _ => Action::Noop,
+    }
+}
+
 /// Walk every action's bindings and return the matching single-key action.
 fn match_single(binds: &Keybinds, key: &KeyEvent) -> Option<Action> {
     for (list, action) in entries(binds) {
@@ -178,7 +196,7 @@ fn match_chord(binds: &Keybinds, first: &KeyEvent, second: &KeyEvent) -> Option<
     None
 }
 
-fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 21] {
+fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 22] {
     [
         (&b.quit, Action::Quit),
         (&b.focus_prev_column, Action::FocusPrevColumn),
@@ -201,5 +219,6 @@ fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 21] {
         (&b.begin_command, Action::BeginCommand),
         (&b.begin_search, Action::BeginSearch),
         (&b.toggle_help, Action::ToggleHelp),
+        (&b.open_task_detail, Action::OpenTaskDetail),
     ]
 }

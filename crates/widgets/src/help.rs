@@ -30,7 +30,7 @@ impl<'a> HelpOverlay<'a> {
 
 impl Widget for HelpOverlay<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let popup = centered_rect(area, 60, 80);
+        let popup = centered_rect(area, 70, 95);
         // Clear the area first so the overlay doesn't blend with whatever
         // was beneath it.
         Clear.render(popup, buf);

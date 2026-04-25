@@ -38,6 +38,7 @@ pub enum Mode {
     Jump,
     TagPicker,
     Dashboard,
+    TaskDetail,
 }
 
 /// What the user is currently typing into in Insert mode.
@@ -51,6 +52,10 @@ pub enum PendingEdit {
     },
     /// Rename an existing task.
     RenameTask { column: usize, task_id: TaskId },
+    /// Replace a task's description; empty input clears it.
+    EditDescription { task_id: TaskId },
+    /// Set a task's due date from a `YYYY-MM-DD` string; empty input clears it.
+    EditDueDate { task_id: TaskId },
 }
 
 /// In-memory snapshot of what's on screen. The repository is queried once
@@ -95,8 +100,21 @@ pub struct App {
     /// Most-recent dashboard snapshot, rebuilt each time the overlay is
     /// opened.
     pub dashboard: Option<DashboardSnapshot>,
+    /// Snapshot for the TaskDetail overlay. Holds the id of the task being
+    /// inspected and a cached per-state sojourn list (refreshed each time the
+    /// overlay opens).
+    pub task_detail: Option<TaskDetailSnapshot>,
     /// Rendering palette — resolved from config at startup.
     pub theme: Theme,
+}
+
+/// State cached while the TaskDetail overlay is open.
+#[derive(Debug, Clone)]
+pub struct TaskDetailSnapshot {
+    pub task_id: TaskId,
+    /// `(state_id, duration)` pairs, ordered to match the project's state
+    /// order (so the detail panel renders them top-to-bottom naturally).
+    pub sojourn: Vec<(StateId, std::time::Duration)>,
 }
 
 /// Stats rendered by the Dashboard overlay. Assembled from
@@ -169,6 +187,7 @@ impl App {
             jump: None,
             tag_picker: None,
             dashboard: None,
+            task_detail: None,
             theme: config.theme,
         }
     }

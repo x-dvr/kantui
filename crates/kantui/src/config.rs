@@ -167,6 +167,7 @@ begin_tag_picker      = "t"
 begin_command         = ":"
 begin_search          = "/"
 toggle_help           = "?"
+open_task_detail      = "e"
 "##
     .to_owned()
 }
@@ -405,6 +406,7 @@ fn binding_slot<'a>(binds: &'a mut Keybinds, name: &str) -> Option<&'a mut Vec<B
         "begin_command" => &mut binds.begin_command,
         "begin_search" => &mut binds.begin_search,
         "toggle_help" => &mut binds.toggle_help,
+        "open_task_detail" => &mut binds.open_task_detail,
         _ => return None,
     })
 }

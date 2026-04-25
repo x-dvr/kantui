@@ -71,4 +71,19 @@ pub enum Action {
     OpenDashboard,
     /// Dismiss the dashboard.
     CloseDashboard,
+
+    // --- Task detail overlay ---
+    /// Open the task-detail overlay for the currently-selected task.
+    OpenTaskDetail,
+    /// Close the task-detail overlay (no save).
+    CloseTaskDetail,
+    /// Cycle the priority of the currently-detailed task.
+    CycleTaskPriority,
+    /// Cycle the complexity of the currently-detailed task.
+    CycleTaskComplexity,
+    /// Open a single-line prompt to edit the task description.
+    BeginEditDescription,
+    /// Open a single-line prompt to edit the due date (`YYYY-MM-DD` or empty
+    /// to clear).
+    BeginEditDueDate,
 }

@@ -583,3 +583,93 @@ async fn tag_picker_without_tags_stays_in_normal_mode() {
         app.status_message,
     );
 }
+
+#[tokio::test]
+async fn task_detail_overlay_opens_and_renders_fields() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    // `e` opens the detail overlay for the currently-selected task.
+    dispatch_key(&mut app, &services, KeyCode::Char('e'), KeyModifiers::NONE).await;
+    assert_eq!(app.mode, Mode::TaskDetail);
+    assert!(app.task_detail.is_some());
+
+    let out = render_once(&app);
+    assert!(out.contains(" Task "), "title chip missing: {out}");
+    assert!(out.contains("priority"), "priority label missing: {out}");
+    assert!(
+        out.contains("Description"),
+        "description header missing: {out}"
+    );
+    assert!(
+        out.contains("Time per state"),
+        "sojourn header missing: {out}"
+    );
+
+    // Esc closes it.
+    dispatch_key(&mut app, &services, KeyCode::Esc, KeyModifiers::NONE).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.task_detail.is_none());
+}
+
+#[tokio::test]
+async fn task_detail_cycle_priority_persists() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    let task_id = app.selected_task().expect("a selected task").id;
+    let initial = {
+        let tasks = SqliteTaskRepo::new(pool.clone());
+        tasks
+            .get(task_id)
+            .await
+            .expect("get")
+            .expect("task")
+            .priority
+    };
+
+    dispatch_key(&mut app, &services, KeyCode::Char('e'), KeyModifiers::NONE).await;
+    dispatch_key(&mut app, &services, KeyCode::Char('p'), KeyModifiers::NONE).await;
+
+    let after = {
+        let tasks = SqliteTaskRepo::new(pool.clone());
+        tasks
+            .get(task_id)
+            .await
+            .expect("get")
+            .expect("task")
+            .priority
+    };
+    assert_ne!(after, initial, "priority should have advanced");
+}
+
+#[tokio::test]
+async fn task_detail_set_due_date_via_prompt() {
+    let pool = seeded_pool().await;
+    let mut app = build_app(pool.clone()).await;
+    let services = services(&pool);
+
+    let task_id = app.selected_task().expect("a selected task").id;
+
+    dispatch_key(&mut app, &services, KeyCode::Char('e'), KeyModifiers::NONE).await;
+    // `D` opens the due-date prompt.
+    dispatch_key(&mut app, &services, KeyCode::Char('D'), KeyModifiers::SHIFT).await;
+    assert_eq!(app.mode, Mode::Insert);
+    type_text(&mut app, &services, "2026-12-31").await;
+    dispatch_key(&mut app, &services, KeyCode::Enter, KeyModifiers::NONE).await;
+
+    let due = {
+        let tasks = SqliteTaskRepo::new(pool.clone());
+        tasks
+            .get(task_id)
+            .await
+            .expect("get")
+            .expect("task")
+            .due_date
+    };
+    assert!(due.is_some(), "due date should be set");
+    // After saving, control returns to the detail overlay.
+    assert_eq!(app.mode, Mode::TaskDetail);
+}

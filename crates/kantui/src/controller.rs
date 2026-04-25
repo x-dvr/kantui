@@ -190,6 +190,17 @@ pub async fn process(action: Action, app: &mut App, services: &AppServices) -> C
             app.mode = Mode::Normal;
             Ok(())
         }
+
+        Action::OpenTaskDetail => open_task_detail(app, services).await,
+        Action::CloseTaskDetail => {
+            app.task_detail = None;
+            app.mode = Mode::Normal;
+            Ok(())
+        }
+        Action::CycleTaskPriority => cycle_priority(app, services).await,
+        Action::CycleTaskComplexity => cycle_complexity(app, services).await,
+        Action::BeginEditDescription => begin_edit_description(app),
+        Action::BeginEditDueDate => begin_edit_due_date(app),
     }
 }
 
@@ -238,19 +249,31 @@ async fn submit_insert(app: &mut App, services: &AppServices) -> CoreResult<()> 
         app.leave_insert();
         return Ok(());
     };
-    let title = app.input.value().trim().to_owned();
-    if title.is_empty() {
-        app.set_status("title must not be empty");
-        return Ok(());
-    }
+    let raw = app.input.value().to_owned();
 
+    // NewTask / RenameTask require a non-empty trimmed title; the
+    // description / due-date edits accept empty input as "clear the field".
     match edit {
         PendingEdit::NewTask { column, anchor } => {
+            let title = raw.trim().to_owned();
+            if title.is_empty() {
+                app.set_status("title must not be empty");
+                return Ok(());
+            }
             create_task(app, services, column, anchor, title).await
         }
         PendingEdit::RenameTask { column, task_id } => {
+            let title = raw.trim().to_owned();
+            if title.is_empty() {
+                app.set_status("title must not be empty");
+                return Ok(());
+            }
             rename_task(app, services, column, task_id, title).await
         }
+        PendingEdit::EditDescription { task_id } => {
+            set_description(app, services, task_id, raw).await
+        }
+        PendingEdit::EditDueDate { task_id } => set_due_date(app, services, task_id, raw).await,
     }
 }
 
@@ -649,6 +672,240 @@ async fn open_dashboard(app: &mut App, services: &AppServices) -> CoreResult<()>
     });
     app.mode = Mode::Dashboard;
     Ok(())
+}
+
+// -----------------------------------------------------------------------
+// Task detail
+// -----------------------------------------------------------------------
+
+async fn open_task_detail(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(task) = app.selected_task() else {
+        app.set_status("no task selected");
+        return Ok(());
+    };
+    let task_id = task.id;
+    let sojourn = load_sojourn(app, services, task_id).await?;
+    app.task_detail = Some(crate::app::TaskDetailSnapshot { task_id, sojourn });
+    app.mode = Mode::TaskDetail;
+    Ok(())
+}
+
+async fn load_sojourn(
+    app: &App,
+    services: &AppServices,
+    task_id: TaskId,
+) -> CoreResult<Vec<(StateId, std::time::Duration)>> {
+    let raw = services.stats_service().task_history(task_id).await?;
+    // Re-order so per-state rows match the project's column order.
+    let mut by_id: std::collections::HashMap<[u8; 16], std::time::Duration> = raw
+        .into_iter()
+        .map(|(id, d)| (*id.inner().as_bytes(), d))
+        .collect();
+    let mut out = Vec::with_capacity(app.board.project.states.len());
+    for st in &app.board.project.states {
+        if let Some(d) = by_id.remove(st.id.inner().as_bytes()) {
+            out.push((st.id, d));
+        }
+    }
+    Ok(out)
+}
+
+async fn cycle_priority(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(snapshot) = app.task_detail.as_ref() else {
+        return Ok(());
+    };
+    let task_id = snapshot.task_id;
+    let task = task_by_id(app, task_id)
+        .ok_or_else(|| CoreError::validation("task vanished from snapshot"))?;
+    let next = match task.priority {
+        Priority::Low => Priority::Normal,
+        Priority::Normal => Priority::High,
+        Priority::High => Priority::Critical,
+        Priority::Critical => Priority::Low,
+    };
+    let update = TaskUpdate {
+        priority: Some(next),
+        ..Default::default()
+    };
+    services.task_service().update(task_id, update).await?;
+    let column = column_of(app, task_id).unwrap_or(app.focused_column);
+    reload_column(app, services, column).await?;
+    Ok(())
+}
+
+async fn cycle_complexity(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(snapshot) = app.task_detail.as_ref() else {
+        return Ok(());
+    };
+    let task_id = snapshot.task_id;
+    let task = task_by_id(app, task_id)
+        .ok_or_else(|| CoreError::validation("task vanished from snapshot"))?;
+    let next = match task.complexity {
+        kantui_core::Complexity::Light => kantui_core::Complexity::Deep,
+        kantui_core::Complexity::Deep => kantui_core::Complexity::Light,
+    };
+    let update = TaskUpdate {
+        complexity: Some(next),
+        ..Default::default()
+    };
+    services.task_service().update(task_id, update).await?;
+    let column = column_of(app, task_id).unwrap_or(app.focused_column);
+    reload_column(app, services, column).await?;
+    Ok(())
+}
+
+fn begin_edit_description(app: &mut App) -> CoreResult<()> {
+    let Some(snapshot) = app.task_detail.as_ref() else {
+        return Ok(());
+    };
+    let task_id = snapshot.task_id;
+    let initial = task_by_id(app, task_id)
+        .and_then(|t| t.description.clone())
+        .unwrap_or_default();
+    app.enter_insert(PendingEdit::EditDescription { task_id }, &initial);
+    Ok(())
+}
+
+fn begin_edit_due_date(app: &mut App) -> CoreResult<()> {
+    let Some(snapshot) = app.task_detail.as_ref() else {
+        return Ok(());
+    };
+    let task_id = snapshot.task_id;
+    let initial = task_by_id(app, task_id)
+        .and_then(|t| t.due_date)
+        .map(format_date_yyyy_mm_dd)
+        .unwrap_or_default();
+    app.enter_insert(PendingEdit::EditDueDate { task_id }, &initial);
+    Ok(())
+}
+
+async fn set_description(
+    app: &mut App,
+    services: &AppServices,
+    task_id: TaskId,
+    raw: String,
+) -> CoreResult<()> {
+    let trimmed = raw.trim();
+    let value = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    };
+    let update = TaskUpdate {
+        description: Some(value),
+        ..Default::default()
+    };
+    services.task_service().update(task_id, update).await?;
+    finish_detail_edit(app, services, task_id).await
+}
+
+async fn set_due_date(
+    app: &mut App,
+    services: &AppServices,
+    task_id: TaskId,
+    raw: String,
+) -> CoreResult<()> {
+    let trimmed = raw.trim();
+    let parsed = if trimmed.is_empty() {
+        None
+    } else {
+        match parse_yyyy_mm_dd(trimmed) {
+            Some(ts) => Some(ts),
+            None => {
+                app.set_status(format!("bad date `{trimmed}` — use YYYY-MM-DD or empty"));
+                app.leave_insert();
+                return Ok(());
+            }
+        }
+    };
+    let update = TaskUpdate {
+        due_date: Some(parsed),
+        ..Default::default()
+    };
+    services.task_service().update(task_id, update).await?;
+    finish_detail_edit(app, services, task_id).await
+}
+
+/// Common tail for description/due-date submits: refresh the owning column,
+/// dismiss the prompt, and return to the detail overlay.
+async fn finish_detail_edit(
+    app: &mut App,
+    services: &AppServices,
+    task_id: TaskId,
+) -> CoreResult<()> {
+    let column = column_of(app, task_id).unwrap_or(app.focused_column);
+    reload_column(app, services, column).await?;
+    app.leave_insert();
+    if app.task_detail.is_some() {
+        app.mode = Mode::TaskDetail;
+    }
+    Ok(())
+}
+
+fn task_by_id(app: &App, id: TaskId) -> Option<&Task> {
+    app.board
+        .tasks_by_state
+        .iter()
+        .flatten()
+        .find(|t| t.id == id)
+}
+
+fn column_of(app: &App, id: TaskId) -> Option<usize> {
+    app.board
+        .tasks_by_state
+        .iter()
+        .position(|tasks| tasks.iter().any(|t| t.id == id))
+}
+
+/// `YYYY-MM-DD` → midnight-UTC `Timestamp`. Reject anything else.
+fn parse_yyyy_mm_dd(s: &str) -> Option<kantui_core::Timestamp> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let y: i32 = parts[0].parse().ok()?;
+    let m: u32 = parts[1].parse().ok()?;
+    let d: u32 = parts[2].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let secs = days_from_civil(y, m, d).checked_mul(86_400)?;
+    let ts = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs as u64))?;
+    Some(kantui_core::Timestamp::from_system_time(ts))
+}
+
+/// Inverse of `civil_date` in widgets — Howard Hinnant's days-from-civil.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146_097 + doe as i64 - 719_468
+}
+
+fn format_date_yyyy_mm_dd(ts: kantui_core::Timestamp) -> String {
+    let secs = ts
+        .to_system_time()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i32 + era as i32 * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 // -----------------------------------------------------------------------

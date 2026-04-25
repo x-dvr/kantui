@@ -4,7 +4,8 @@ use kantui_core::Task;
 use kantui_widgets::{
     BoardView, BoardViewModel, Dashboard, DashboardStateRow, DashboardThroughput, DashboardView,
     HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode, StateColumnView,
-    StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, Theme,
+    StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, TaskDetail, TaskDetailView,
+    Theme,
 };
 
 use crate::app::BoardSnapshot;
@@ -76,6 +77,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         render_dashboard(frame, area, app, snapshot, &theme);
     }
 
+    if app.mode == Mode::TaskDetail
+        && let Some(snapshot) = &app.task_detail
+    {
+        render_task_detail(frame, area, app, snapshot, &theme);
+    }
+
     if app.show_help {
         frame.render_widget(HelpOverlay::new("Keybindings", HELP_ROWS, &theme), area);
     }
@@ -120,6 +127,64 @@ fn render_dashboard(
         },
     };
     frame.render_widget(Dashboard::new(view, theme), area);
+}
+
+fn render_task_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    snapshot: &crate::app::TaskDetailSnapshot,
+    theme: &Theme,
+) {
+    // Look up the live task from the board (the snapshot only carries the
+    // id + sojourn).
+    let Some(task) = app
+        .board
+        .tasks_by_state
+        .iter()
+        .flatten()
+        .find(|t| t.id == snapshot.task_id)
+    else {
+        return;
+    };
+
+    // Build owned buffers for borrowed slices in TaskDetailView.
+    let chips: Vec<TagChip<'_>> = task
+        .tags
+        .iter()
+        .filter_map(|id| app.board.tag_by_id(*id))
+        .map(|tag| TagChip {
+            name: tag.name.as_str(),
+            color: tag.color,
+        })
+        .collect();
+
+    let sojourn_owned: Vec<(&str, u64)> = snapshot
+        .sojourn
+        .iter()
+        .filter_map(|(state_id, dur)| {
+            app.board
+                .project
+                .states
+                .iter()
+                .find(|s| s.id == *state_id)
+                .map(|s| (s.name.as_str(), dur.as_secs()))
+        })
+        .collect();
+
+    let view = TaskDetailView {
+        title: task.title.as_str(),
+        description: task.description.as_deref(),
+        priority: task.priority,
+        complexity: task.complexity,
+        due_date: task.due_date,
+        tags: &chips,
+        sojourn: &sojourn_owned,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+    };
+
+    frame.render_widget(TaskDetail::new(view, theme), area);
 }
 
 fn render_tag_picker(
@@ -238,6 +303,8 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let prefix = match (app.mode, app.pending_edit.as_ref()) {
         (Mode::Insert, Some(PendingEdit::NewTask { .. })) => "new › ",
         (Mode::Insert, Some(PendingEdit::RenameTask { .. })) => "rename › ",
+        (Mode::Insert, Some(PendingEdit::EditDescription { .. })) => "desc › ",
+        (Mode::Insert, Some(PendingEdit::EditDueDate { .. })) => "due (YYYY-MM-DD) › ",
         (Mode::Command, _) => ":",
         (Mode::Search, _) => "/",
         _ => "› ",
@@ -247,7 +314,9 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let mode = match app.mode {
-        Mode::Normal | Mode::Jump | Mode::TagPicker | Mode::Dashboard => WidgetMode::Normal,
+        Mode::Normal | Mode::Jump | Mode::TagPicker | Mode::Dashboard | Mode::TaskDetail => {
+            WidgetMode::Normal
+        }
         Mode::Insert => WidgetMode::Insert,
         Mode::Command => WidgetMode::Command,
         Mode::Search => WidgetMode::Search,
@@ -384,6 +453,10 @@ const HELP_ROWS: &[HelpRow<'static>] = &[
     HelpRow {
         keys: "i",
         description: "Rename selected task",
+    },
+    HelpRow {
+        keys: "e",
+        description: "Open task detail (priority, description, due date, sojourn)",
     },
     HelpRow {
         keys: "d",

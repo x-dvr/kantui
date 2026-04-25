@@ -137,7 +137,7 @@ fn build_tags_line<'a>(view: &TaskCardView<'a>) -> Line<'a> {
 
 /// `YYYY-MM-DD` formatting — sufficient for M3. Locale formatting is the
 /// binary's problem.
-fn format_due_date(ts: Timestamp) -> String {
+pub(crate) fn format_due_date(ts: Timestamp) -> String {
     use std::time::UNIX_EPOCH;
     let secs = ts
         .to_system_time()
