@@ -62,8 +62,10 @@ Normal mode (see `?` in-app for the live cheatsheet):
 | `gg` / `G`      | Top / bottom of column                   |
 | `gw`            | Two-character jump (Helix-style)         |
 | `gs`            | Open statistics dashboard                |
+| `gp`            | Open project picker                      |
 | `n` / `N`       | New task below / above selection         |
 | `i`             | Rename selected task                     |
+| `e`             | Open task detail (priority, description, due date, sojourn) |
 | `d`             | Delete selected task                     |
 | `H` / `L`       | Move task to previous / next column      |
 | `K` / `J`       | Shift task up / down within column       |
@@ -73,9 +75,18 @@ Normal mode (see `?` in-app for the live cheatsheet):
 | `?`             | Toggle help overlay                      |
 | `q` / `Ctrl-C`  | Quit                                     |
 
+Inside the **task detail** overlay (`e`): `i` rename, `e` edit description,
+`D` set due date, `p` cycle priority, `t` tag picker, `Esc`/`q` close.
+
+Inside the **project picker** (`gp`): `j`/`k` move, `Enter` open, `e` edit
+states/WIP limits, `n` new project, `d` delete, `Esc`/`q` close. The editor
+uses `j`/`k` to focus a state, `Enter`/`i` rename, `w` set WIP limit,
+`a` add state, `d` delete state, `K`/`J` reorder.
+
 Command mode (`:`) accepts: `q`, `help`, `new-state <name>`,
 `rename-state <name>`, `delete-state`, `new-task <title>`,
-`tag-new <name> [color]`, `tag-delete <name>`.
+`tag-new <name> [color]`, `tag-delete <name>`, `stats` (alias
+`dashboard`), `projects`, `edit-project`.
 
 Every binding can be overridden in the config file — see below.
 
@@ -122,6 +133,7 @@ two-character chord (`"gg"`, `"gw"`).
 |---------------------|------------------------------------------|
 | `--db <url>`        | `sqlite://$XDG_DATA_HOME/kantui/kantui.db` |
 | `--config <path>`   | `$XDG_CONFIG_HOME/kantui/config.toml`    |
+| `--state <path>`    | `$XDG_DATA_HOME/kantui/state.toml` (last opened project, etc.) |
 | `--log <path>`      | `$XDG_CACHE_HOME/kantui/kantui.log`      |
 | `--log-level <lvl>` | `info` (`error` / `warn` / `debug` / `trace`) |
 | `--gen-conf`        | Write default config and exit            |
@@ -129,8 +141,7 @@ two-character chord (`"gg"`, `"gw"`).
 
 ## Architecture
 
-Strictly hexagonal workspace. See `CLAUDE.md` and `plan.md` for the full
-story.
+Strictly hexagonal workspace. See `CLAUDE.md` for the full story.
 
 ```
 kantui (binary, event loop, keymap, config)
