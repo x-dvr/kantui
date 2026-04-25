@@ -66,6 +66,14 @@ impl Keymap {
                 self.pending = None;
                 dispatch_task_detail(key)
             }
+            Mode::ProjectPicker => {
+                self.pending = None;
+                dispatch_project_picker(key)
+            }
+            Mode::ProjectEditor => {
+                self.pending = None;
+                dispatch_project_editor(key)
+            }
         }
     }
 
@@ -153,6 +161,39 @@ fn dispatch_dashboard(key: KeyEvent) -> Action {
     }
 }
 
+fn dispatch_project_picker(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => Action::CloseProjectPicker,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::CloseProjectPicker,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::CloseProjectPicker,
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::PickerSelectNext,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::PickerSelectPrev,
+        (KeyCode::Enter, _) => Action::PickerActivate,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::PickerEditSelected,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::PickerNewProject,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PickerDeleteSelected,
+        _ => Action::Noop,
+    }
+}
+
+fn dispatch_project_editor(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => Action::CloseProjectEditor,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::CloseProjectEditor,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Action::CloseProjectEditor,
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::EditorFocusNext,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::EditorFocusPrev,
+        (KeyCode::Enter, _) => Action::EditorBeginEdit,
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditorBeginEdit,
+        (KeyCode::Char('w'), KeyModifiers::NONE) => Action::EditorBeginEditWip,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::EditorAddState,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::EditorDeleteState,
+        (KeyCode::Char('K'), _) => Action::EditorShiftStateUp,
+        (KeyCode::Char('J'), _) => Action::EditorShiftStateDown,
+        _ => Action::Noop,
+    }
+}
+
 fn dispatch_task_detail(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) => Action::CloseTaskDetail,
@@ -196,7 +237,7 @@ fn match_chord(binds: &Keybinds, first: &KeyEvent, second: &KeyEvent) -> Option<
     None
 }
 
-fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 22] {
+fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 23] {
     [
         (&b.quit, Action::Quit),
         (&b.focus_prev_column, Action::FocusPrevColumn),
@@ -220,5 +261,6 @@ fn entries(b: &Keybinds) -> [(&Vec<Binding>, Action); 22] {
         (&b.begin_search, Action::BeginSearch),
         (&b.toggle_help, Action::ToggleHelp),
         (&b.open_task_detail, Action::OpenTaskDetail),
+        (&b.open_project_picker, Action::OpenProjectPicker),
     ]
 }

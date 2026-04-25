@@ -168,6 +168,7 @@ begin_command         = ":"
 begin_search          = "/"
 toggle_help           = "?"
 open_task_detail      = "e"
+open_project_picker   = "gp"
 "##
     .to_owned()
 }
@@ -407,6 +408,7 @@ fn binding_slot<'a>(binds: &'a mut Keybinds, name: &str) -> Option<&'a mut Vec<B
         "begin_search" => &mut binds.begin_search,
         "toggle_help" => &mut binds.toggle_help,
         "open_task_detail" => &mut binds.open_task_detail,
+        "open_project_picker" => &mut binds.open_project_picker,
         _ => return None,
     })
 }

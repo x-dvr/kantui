@@ -88,6 +88,7 @@ pub struct Keybinds {
     pub begin_search: Vec<Binding>,
     pub toggle_help: Vec<Binding>,
     pub open_task_detail: Vec<Binding>,
+    pub open_project_picker: Vec<Binding>,
 }
 
 impl Default for Keybinds {
@@ -144,6 +145,10 @@ impl Keybinds {
             begin_search: vec![Binding::Single(Key::plain(KeyCode::Char('/')))],
             toggle_help: vec![Binding::Single(Key::shift(KeyCode::Char('?')))],
             open_task_detail: vec![Binding::Single(Key::plain(KeyCode::Char('e')))],
+            open_project_picker: vec![Binding::Chord(
+                Key::plain(KeyCode::Char('g')),
+                Key::plain(KeyCode::Char('p')),
+            )],
         }
     }
 
@@ -181,6 +186,7 @@ impl Keybinds {
             .chain(&self.begin_search)
             .chain(&self.toggle_help)
             .chain(&self.open_task_detail)
+            .chain(&self.open_project_picker)
     }
 }
 

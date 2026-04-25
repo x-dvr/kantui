@@ -86,4 +86,44 @@ pub enum Action {
     /// Open a single-line prompt to edit the due date (`YYYY-MM-DD` or empty
     /// to clear).
     BeginEditDueDate,
+
+    // --- Project picker ---
+    /// Open the project picker overlay.
+    OpenProjectPicker,
+    /// Dismiss the picker.
+    CloseProjectPicker,
+    /// Move selection up in the picker.
+    PickerSelectPrev,
+    /// Move selection down in the picker.
+    PickerSelectNext,
+    /// Switch the active project to the highlighted entry and return to the
+    /// board.
+    PickerActivate,
+    /// Open the project editor on the highlighted entry.
+    PickerEditSelected,
+    /// Begin creating a new project (prompts for name).
+    PickerNewProject,
+    /// Delete the highlighted project.
+    PickerDeleteSelected,
+
+    // --- Project editor ---
+    /// Dismiss the project editor (returns to picker if it was opened from
+    /// the picker, else to the board).
+    CloseProjectEditor,
+    /// Move focus to the previous editor field / state row.
+    EditorFocusPrev,
+    /// Move focus to the next editor field / state row.
+    EditorFocusNext,
+    /// Begin editing the focused field (rename name/state, edit description).
+    EditorBeginEdit,
+    /// Begin editing the WIP limit of the focused state.
+    EditorBeginEditWip,
+    /// Begin adding a new state to the project under edit.
+    EditorAddState,
+    /// Delete the focused state.
+    EditorDeleteState,
+    /// Move the focused state up one position.
+    EditorShiftStateUp,
+    /// Move the focused state down one position.
+    EditorShiftStateDown,
 }

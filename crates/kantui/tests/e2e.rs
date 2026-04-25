@@ -53,7 +53,12 @@ async fn build_app(pool: SqlitePool) -> App {
 }
 
 fn services(pool: &SqlitePool) -> AppServices {
-    AppServices::new(pool.clone(), SystemClock::new(), UuidV4::new())
+    AppServices::new(
+        pool.clone(),
+        SystemClock::new(),
+        UuidV4::new(),
+        std::env::temp_dir().join(format!("kantui-test-state-{}.toml", std::process::id())),
+    )
 }
 
 fn render_once(app: &App) -> String {

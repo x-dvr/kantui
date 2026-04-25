@@ -11,5 +11,6 @@ pub mod jump;
 pub mod keybinds;
 pub mod keymap;
 pub mod logging;
+pub mod state;
 pub mod tui;
 pub mod view;

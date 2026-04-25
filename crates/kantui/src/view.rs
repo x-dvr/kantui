@@ -3,9 +3,10 @@
 use kantui_core::Task;
 use kantui_widgets::{
     BoardView, BoardViewModel, Dashboard, DashboardStateRow, DashboardThroughput, DashboardView,
-    HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode, StateColumnView,
-    StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, TaskDetail, TaskDetailView,
-    Theme,
+    HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode, ProjectEditor,
+    ProjectEditorStateRow, ProjectEditorView, ProjectPicker, ProjectPickerRow, ProjectPickerView,
+    StateColumnView, StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, TaskDetail,
+    TaskDetailView, Theme,
 };
 
 use crate::app::BoardSnapshot;
@@ -81,6 +82,18 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         && let Some(snapshot) = &app.task_detail
     {
         render_task_detail(frame, area, app, snapshot, &theme);
+    }
+
+    if app.mode == Mode::ProjectPicker
+        && let Some(snapshot) = &app.project_picker
+    {
+        render_project_picker(frame, area, app, snapshot, &theme);
+    }
+
+    if app.mode == Mode::ProjectEditor
+        && let Some(snapshot) = &app.project_editor
+    {
+        render_project_editor(frame, area, snapshot, &theme);
     }
 
     if app.show_help {
@@ -185,6 +198,64 @@ fn render_task_detail(
     };
 
     frame.render_widget(TaskDetail::new(view, theme), area);
+}
+
+fn render_project_picker(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    snapshot: &crate::app::ProjectPickerSnapshot,
+    theme: &Theme,
+) {
+    let active_id = app.board.project.id;
+    let rows: Vec<ProjectPickerRow<'_>> = snapshot
+        .projects
+        .iter()
+        .zip(snapshot.task_counts.iter())
+        .map(|(project, count)| ProjectPickerRow {
+            name: project.name.as_str(),
+            description: project.description.as_deref(),
+            state_count: project.states.len() as u32,
+            task_count: *count,
+            is_active: project.id == active_id,
+        })
+        .collect();
+
+    let view = ProjectPickerView {
+        projects: &rows,
+        selected: if snapshot.projects.is_empty() {
+            None
+        } else {
+            Some(snapshot.selected)
+        },
+    };
+    frame.render_widget(ProjectPicker::new(view, theme), area);
+}
+
+fn render_project_editor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    snapshot: &crate::app::ProjectEditorSnapshot,
+    theme: &Theme,
+) {
+    let states: Vec<ProjectEditorStateRow<'_>> = snapshot
+        .project
+        .states
+        .iter()
+        .zip(snapshot.state_task_counts.iter())
+        .map(|(state, count)| ProjectEditorStateRow {
+            name: state.name.as_str(),
+            wip_limit: state.wip_limit,
+            task_count: *count,
+        })
+        .collect();
+    let view = ProjectEditorView {
+        name: snapshot.project.name.as_str(),
+        description: snapshot.project.description.as_deref(),
+        states: &states,
+        focus: snapshot.focus,
+    };
+    frame.render_widget(ProjectEditor::new(view, theme), area);
 }
 
 fn render_tag_picker(
@@ -305,6 +376,12 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         (Mode::Insert, Some(PendingEdit::RenameTask { .. })) => "rename › ",
         (Mode::Insert, Some(PendingEdit::EditDescription { .. })) => "desc › ",
         (Mode::Insert, Some(PendingEdit::EditDueDate { .. })) => "due (YYYY-MM-DD) › ",
+        (Mode::Insert, Some(PendingEdit::EditProjectName { .. })) => "project name › ",
+        (Mode::Insert, Some(PendingEdit::EditProjectDescription { .. })) => "project desc › ",
+        (Mode::Insert, Some(PendingEdit::RenameState { .. })) => "state name › ",
+        (Mode::Insert, Some(PendingEdit::SetStateWipLimit { .. })) => "wip limit (empty=none) › ",
+        (Mode::Insert, Some(PendingEdit::AddState { .. })) => "new state › ",
+        (Mode::Insert, Some(PendingEdit::NewProject)) => "new project › ",
         (Mode::Command, _) => ":",
         (Mode::Search, _) => "/",
         _ => "› ",
@@ -314,9 +391,13 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
     let mode = match app.mode {
-        Mode::Normal | Mode::Jump | Mode::TagPicker | Mode::Dashboard | Mode::TaskDetail => {
-            WidgetMode::Normal
-        }
+        Mode::Normal
+        | Mode::Jump
+        | Mode::TagPicker
+        | Mode::Dashboard
+        | Mode::TaskDetail
+        | Mode::ProjectPicker
+        | Mode::ProjectEditor => WidgetMode::Normal,
         Mode::Insert => WidgetMode::Insert,
         Mode::Command => WidgetMode::Command,
         Mode::Search => WidgetMode::Search,
@@ -477,6 +558,10 @@ const HELP_ROWS: &[HelpRow<'static>] = &[
     HelpRow {
         keys: "gs",
         description: "Open statistics dashboard",
+    },
+    HelpRow {
+        keys: "gp",
+        description: "Open project picker (Enter open · e edit · n new · d delete)",
     },
     HelpRow {
         keys: ":",

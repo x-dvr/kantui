@@ -6,8 +6,8 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use kantui::{app, cli, config as app_config, logging, tui};
-use kantui_core::{CoreError, CoreResult};
+use kantui::{app, cli, config as app_config, logging, state as ui_state, tui};
+use kantui_core::{CoreError, CoreResult, ProjectRepository};
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SystemClock, UuidV4, sqlite};
 
@@ -62,18 +62,40 @@ async fn run(resolved: cli::Resolved) -> CoreResult<()> {
 
     let pool = sqlite::connect(&resolved.db_url).await?;
 
-    let project = if resolved.seed_demo {
+    let fallback_project = if resolved.seed_demo {
         app::seed_demo_if_empty(pool.clone(), SystemClock::new(), UuidV4::new()).await?
     } else {
         app::ensure_default_project(pool.clone(), SystemClock::new(), UuidV4::new()).await?
     };
 
-    let tasks_repo = SqliteTaskRepo::new(pool.clone());
     let projects_repo = SqliteProjectRepo::new(pool.clone());
+    let tasks_repo = SqliteTaskRepo::new(pool.clone());
     let tags_repo = SqliteTagRepo::new(pool.clone());
+
+    let mut state = ui_state::UiState::load(&resolved.state_path);
+    let project = match state.last_project_id() {
+        Some(id) => match projects_repo.get(id).await? {
+            Some(p) => p,
+            None => fallback_project,
+        },
+        None => fallback_project,
+    };
+
+    // Persist whatever project we actually opened so the file always reflects
+    // current truth, even on first run.
+    state.set_last_project(project.id);
+    if let Err(err) = state.save(&resolved.state_path) {
+        tracing::warn!(path = %resolved.state_path.display(), %err, "failed to persist UI state");
+    }
+
     let board = app::load_board(&projects_repo, &tasks_repo, &tags_repo, project).await?;
     let mut app_state = app::App::with_config(board, &config);
-    let services = app::AppServices::new(pool.clone(), SystemClock::new(), UuidV4::new());
+    let services = app::AppServices::new(
+        pool.clone(),
+        SystemClock::new(),
+        UuidV4::new(),
+        resolved.state_path.clone(),
+    );
 
     let mut terminal = tui::init().map_err(io_to_core)?;
     let result = app::run(&mut terminal, &mut app_state, &services).await;

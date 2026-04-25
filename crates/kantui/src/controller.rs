@@ -3,12 +3,16 @@
 //! surfaced to the caller; the event loop logs + displays them.
 
 use kantui_core::{
-    Color, CoreError, CoreResult, NewState, NewTask, Priority, ProjectRepository, ProjectService,
-    StateId, TagRepository, Task, TaskId, TaskRepository, TaskUpdate,
+    Color, CoreError, CoreResult, NewProject, NewState, NewTask, Priority, Project, ProjectId,
+    ProjectRepository, ProjectService, StateId, TagRepository, Task, TaskId, TaskRepository,
+    TaskUpdate,
 };
+use kantui_widgets::ProjectEditorFocus;
 
 use crate::action::Action;
-use crate::app::{App, AppServices, JumpState, Mode, PendingEdit};
+use crate::app::{
+    App, AppServices, JumpState, Mode, PendingEdit, ProjectEditorSnapshot, ProjectPickerSnapshot,
+};
 use crate::jump;
 
 /// Apply `action` to `app`, calling into `services` for any write that
@@ -201,6 +205,41 @@ pub async fn process(action: Action, app: &mut App, services: &AppServices) -> C
         Action::CycleTaskComplexity => cycle_complexity(app, services).await,
         Action::BeginEditDescription => begin_edit_description(app),
         Action::BeginEditDueDate => begin_edit_due_date(app),
+
+        Action::OpenProjectPicker => open_project_picker(app, services).await,
+        Action::CloseProjectPicker => {
+            app.project_picker = None;
+            app.mode = Mode::Normal;
+            Ok(())
+        }
+        Action::PickerSelectPrev => {
+            picker_move(app, -1);
+            Ok(())
+        }
+        Action::PickerSelectNext => {
+            picker_move(app, 1);
+            Ok(())
+        }
+        Action::PickerActivate => picker_activate(app, services).await,
+        Action::PickerEditSelected => picker_edit_selected(app, services).await,
+        Action::PickerNewProject => picker_new_project(app),
+        Action::PickerDeleteSelected => picker_delete_selected(app, services).await,
+
+        Action::CloseProjectEditor => close_project_editor(app, services).await,
+        Action::EditorFocusPrev => {
+            editor_focus_move(app, -1);
+            Ok(())
+        }
+        Action::EditorFocusNext => {
+            editor_focus_move(app, 1);
+            Ok(())
+        }
+        Action::EditorBeginEdit => editor_begin_edit(app),
+        Action::EditorBeginEditWip => editor_begin_edit_wip(app),
+        Action::EditorAddState => editor_begin_add_state(app),
+        Action::EditorDeleteState => editor_delete_state(app, services).await,
+        Action::EditorShiftStateUp => editor_shift_state(app, services, -1).await,
+        Action::EditorShiftStateDown => editor_shift_state(app, services, 1).await,
     }
 }
 
@@ -219,10 +258,42 @@ fn cancel_prompt(app: &mut App) -> CoreResult<()> {
             Ok(())
         }
         Mode::Command | Mode::Insert => {
+            // If the cancelled prompt belongs to the project editor / picker,
+            // restore that overlay rather than returning to the board.
+            let return_mode = prompt_return_mode(app);
             app.leave_prompt();
+            app.mode = return_mode;
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// Decide which mode the prompt should return to once it's cancelled or
+/// committed. Defaults to Normal; project-editor edits return to the editor,
+/// new-project edits return to the picker, and task-detail edits stay in
+/// detail.
+fn prompt_return_mode(app: &App) -> Mode {
+    match app.pending_edit {
+        Some(
+            PendingEdit::EditProjectName { .. }
+            | PendingEdit::EditProjectDescription { .. }
+            | PendingEdit::RenameState { .. }
+            | PendingEdit::SetStateWipLimit { .. }
+            | PendingEdit::AddState { .. },
+        ) => Mode::ProjectEditor,
+        Some(PendingEdit::NewProject) => {
+            if app.project_picker.is_some() {
+                Mode::ProjectPicker
+            } else {
+                Mode::Normal
+            }
+        }
+        Some(
+            PendingEdit::EditDescription { .. }
+            | PendingEdit::EditDueDate { .. },
+        ) if app.task_detail.is_some() => Mode::TaskDetail,
+        _ => Mode::Normal,
     }
 }
 
@@ -274,6 +345,44 @@ async fn submit_insert(app: &mut App, services: &AppServices) -> CoreResult<()> 
             set_description(app, services, task_id, raw).await
         }
         PendingEdit::EditDueDate { task_id } => set_due_date(app, services, task_id, raw).await,
+        PendingEdit::EditProjectName { project_id } => {
+            let title = raw.trim().to_owned();
+            if title.is_empty() {
+                app.set_status("project name must not be empty");
+                return Ok(());
+            }
+            project_rename(app, services, project_id, title).await
+        }
+        PendingEdit::EditProjectDescription { project_id } => {
+            project_set_description(app, services, project_id, raw).await
+        }
+        PendingEdit::RenameState { state_id } => {
+            let name = raw.trim().to_owned();
+            if name.is_empty() {
+                app.set_status("state name must not be empty");
+                return Ok(());
+            }
+            state_rename(app, services, state_id, name).await
+        }
+        PendingEdit::SetStateWipLimit { state_id } => {
+            state_set_wip(app, services, state_id, raw).await
+        }
+        PendingEdit::AddState { project_id } => {
+            let name = raw.trim().to_owned();
+            if name.is_empty() {
+                app.set_status("state name must not be empty");
+                return Ok(());
+            }
+            state_add(app, services, project_id, name).await
+        }
+        PendingEdit::NewProject => {
+            let name = raw.trim().to_owned();
+            if name.is_empty() {
+                app.set_status("project name must not be empty");
+                return Ok(());
+            }
+            project_create(app, services, name).await
+        }
     }
 }
 
@@ -513,6 +622,11 @@ async fn execute_command(app: &mut App, services: &AppServices, line: &str) -> C
         "tag-new" => cmd_tag_new(app, services, rest).await,
         "tag-delete" => cmd_tag_delete(app, services, rest).await,
         "stats" | "dashboard" => open_dashboard(app, services).await,
+        "projects" => open_project_picker(app, services).await,
+        "edit-project" => {
+            let project = app.board.project.clone();
+            open_editor_for(app, services, project, false).await
+        }
         other => {
             app.set_status(format!("unknown command: {other}"));
             Ok(())
@@ -1031,4 +1145,546 @@ fn update_selection(app: &mut App, column: usize, preferred: Option<TaskId>) {
         (None, 0) => None,
         (None, len) => slot.map(|i| i.min(len - 1)).or(Some(0)),
     };
+}
+
+// -----------------------------------------------------------------------
+// Project picker
+// -----------------------------------------------------------------------
+
+async fn open_project_picker(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let snapshot = build_picker_snapshot(app, services, Some(app.board.project.id)).await?;
+    app.project_picker = Some(snapshot);
+    app.mode = Mode::ProjectPicker;
+    Ok(())
+}
+
+async fn build_picker_snapshot(
+    app: &App,
+    services: &AppServices,
+    prefer: Option<ProjectId>,
+) -> CoreResult<ProjectPickerSnapshot> {
+    let project_repo = services.project_repo();
+    let task_repo = services.task_repo();
+    let mut projects = project_repo.list().await?;
+    projects.sort_by_key(|p| p.name.to_lowercase());
+
+    let mut task_counts = Vec::with_capacity(projects.len());
+    for project in &projects {
+        let mut count = 0u32;
+        for state in &project.states {
+            count = count.saturating_add(task_repo.list_by_state(state.id).await?.len() as u32);
+        }
+        task_counts.push(count);
+    }
+
+    let preferred = prefer.unwrap_or(app.board.project.id);
+    let selected = projects
+        .iter()
+        .position(|p| p.id == preferred)
+        .unwrap_or(0);
+
+    Ok(ProjectPickerSnapshot {
+        projects,
+        task_counts,
+        selected,
+    })
+}
+
+fn picker_move(app: &mut App, delta: i32) {
+    let Some(picker) = app.project_picker.as_mut() else {
+        return;
+    };
+    if picker.projects.is_empty() {
+        picker.selected = 0;
+        return;
+    }
+    let len = picker.projects.len() as i32;
+    let next = (picker.selected as i32 + delta).rem_euclid(len);
+    picker.selected = next as usize;
+}
+
+async fn picker_activate(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(picker) = app.project_picker.as_ref() else {
+        return Ok(());
+    };
+    let Some(project) = picker.projects.get(picker.selected).cloned() else {
+        app.set_status("no project selected");
+        return Ok(());
+    };
+    if project.id == app.board.project.id {
+        app.project_picker = None;
+        app.mode = Mode::Normal;
+        return Ok(());
+    }
+    switch_active_project(app, services, project).await?;
+    app.project_picker = None;
+    app.mode = Mode::Normal;
+    Ok(())
+}
+
+async fn switch_active_project(
+    app: &mut App,
+    services: &AppServices,
+    project: Project,
+) -> CoreResult<()> {
+    let board = crate::app::load_board(
+        &services.project_repo(),
+        &services.task_repo(),
+        &services.tag_repo(),
+        project,
+    )
+    .await?;
+    app.board = board;
+    app.focused_column = 0;
+    app.selected_per_column = app
+        .board
+        .tasks_by_state
+        .iter()
+        .map(|tasks| if tasks.is_empty() { None } else { Some(0) })
+        .collect();
+    app.search_query = None;
+
+    // Persist the active project so the next launch re-opens it.
+    let mut state = crate::state::UiState::load(services.state_path());
+    state.set_last_project(app.board.project.id);
+    if let Err(err) = state.save(services.state_path()) {
+        tracing::warn!(
+            path = %services.state_path().display(),
+            %err,
+            "failed to persist UI state"
+        );
+    }
+    Ok(())
+}
+
+async fn picker_edit_selected(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(picker) = app.project_picker.as_ref() else {
+        return Ok(());
+    };
+    let Some(project) = picker.projects.get(picker.selected).cloned() else {
+        app.set_status("no project selected");
+        return Ok(());
+    };
+    open_editor_for(app, services, project, true).await
+}
+
+fn picker_new_project(app: &mut App) -> CoreResult<()> {
+    app.mode = Mode::Insert;
+    app.pending_edit = Some(PendingEdit::NewProject);
+    app.input = kantui_widgets::InputState::new();
+    Ok(())
+}
+
+async fn picker_delete_selected(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(picker) = app.project_picker.as_ref() else {
+        return Ok(());
+    };
+    let Some(project) = picker.projects.get(picker.selected).cloned() else {
+        app.set_status("no project selected");
+        return Ok(());
+    };
+    if picker.projects.len() <= 1 {
+        app.set_status("cannot delete the only project");
+        return Ok(());
+    }
+
+    let active = project.id == app.board.project.id;
+    project_service(services).delete(project.id).await?;
+
+    // Refresh the picker. If we deleted the active project, switch to whatever
+    // project sorts first now.
+    let mut snapshot = build_picker_snapshot(app, services, None).await?;
+    if active {
+        if let Some(first) = snapshot.projects.first().cloned() {
+            switch_active_project(app, services, first).await?;
+            snapshot = build_picker_snapshot(app, services, Some(app.board.project.id)).await?;
+        }
+    }
+    snapshot.selected = snapshot.selected.min(snapshot.projects.len().saturating_sub(1));
+    app.project_picker = Some(snapshot);
+    Ok(())
+}
+
+async fn project_create(
+    app: &mut App,
+    services: &AppServices,
+    name: String,
+) -> CoreResult<()> {
+    let svc = project_service(services);
+    let created = svc
+        .create(NewProject {
+            name,
+            description: None,
+            initial_states: vec!["Todo".into(), "Doing".into(), "Done".into()],
+        })
+        .await?;
+    let created_id = created.id;
+
+    // Always rebuild the picker to include the new project.
+    let snapshot = build_picker_snapshot(app, services, Some(created_id)).await?;
+    app.project_picker = Some(snapshot);
+    app.leave_insert();
+    app.mode = Mode::ProjectPicker;
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// Project editor
+// -----------------------------------------------------------------------
+
+async fn open_editor_for(
+    app: &mut App,
+    services: &AppServices,
+    project: Project,
+    return_to_picker: bool,
+) -> CoreResult<()> {
+    let snapshot = build_editor_snapshot(services, project, return_to_picker).await?;
+    app.project_editor = Some(snapshot);
+    app.mode = Mode::ProjectEditor;
+    Ok(())
+}
+
+async fn build_editor_snapshot(
+    services: &AppServices,
+    project: Project,
+    return_to_picker: bool,
+) -> CoreResult<ProjectEditorSnapshot> {
+    let task_repo = services.task_repo();
+    let mut state_task_counts = Vec::with_capacity(project.states.len());
+    for state in &project.states {
+        state_task_counts.push(task_repo.list_by_state(state.id).await?.len() as u32);
+    }
+    Ok(ProjectEditorSnapshot {
+        project,
+        state_task_counts,
+        focus: ProjectEditorFocus::Name,
+        return_to_picker,
+    })
+}
+
+async fn refresh_editor_snapshot(
+    app: &mut App,
+    services: &AppServices,
+    preserve_focus: ProjectEditorFocus,
+) -> CoreResult<()> {
+    let Some(current) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let project_id = current.project.id;
+    let return_to_picker = current.return_to_picker;
+    let project = services
+        .project_repo()
+        .get(project_id)
+        .await?
+        .ok_or_else(|| CoreError::validation("project under edit vanished"))?;
+    let mut snapshot = build_editor_snapshot(services, project, return_to_picker).await?;
+    snapshot.focus = clamp_focus(preserve_focus, snapshot.project.states.len());
+    app.project_editor = Some(snapshot);
+    if app.mode == Mode::Insert {
+        // Caller will pop Insert; we leave the mode flip to them.
+    } else {
+        app.mode = Mode::ProjectEditor;
+    }
+    Ok(())
+}
+
+fn clamp_focus(focus: ProjectEditorFocus, state_count: usize) -> ProjectEditorFocus {
+    match focus {
+        ProjectEditorFocus::State(i) if i >= state_count => {
+            if state_count == 0 {
+                ProjectEditorFocus::AddState
+            } else {
+                ProjectEditorFocus::State(state_count - 1)
+            }
+        }
+        other => other,
+    }
+}
+
+async fn close_project_editor(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.take() else {
+        app.mode = Mode::Normal;
+        return Ok(());
+    };
+
+    // If the editor was open on the active project, refresh the board so any
+    // state edits/reorders show up immediately.
+    if editor.project.id == app.board.project.id {
+        reload_board(app, services).await?;
+    }
+
+    if editor.return_to_picker {
+        // Rebuild the picker so its rows reflect any rename/state changes.
+        let snapshot = build_picker_snapshot(app, services, Some(editor.project.id)).await?;
+        app.project_picker = Some(snapshot);
+        app.mode = Mode::ProjectPicker;
+    } else {
+        app.mode = Mode::Normal;
+    }
+    Ok(())
+}
+
+fn editor_focus_move(app: &mut App, delta: i32) {
+    let Some(editor) = app.project_editor.as_mut() else {
+        return;
+    };
+    let total = editor_focus_count(editor.project.states.len());
+    let current = focus_to_index(editor.focus, editor.project.states.len());
+    let next = ((current as i32 + delta).rem_euclid(total as i32)) as usize;
+    editor.focus = index_to_focus(next, editor.project.states.len());
+}
+
+fn editor_focus_count(state_count: usize) -> usize {
+    // Name + Description + N state rows + AddState
+    3 + state_count
+}
+
+fn focus_to_index(focus: ProjectEditorFocus, state_count: usize) -> usize {
+    match focus {
+        ProjectEditorFocus::Name => 0,
+        ProjectEditorFocus::Description => 1,
+        ProjectEditorFocus::State(i) => 2 + i.min(state_count.saturating_sub(1)),
+        ProjectEditorFocus::AddState => 2 + state_count,
+    }
+}
+
+fn index_to_focus(idx: usize, state_count: usize) -> ProjectEditorFocus {
+    match idx {
+        0 => ProjectEditorFocus::Name,
+        1 => ProjectEditorFocus::Description,
+        i if i == 2 + state_count => ProjectEditorFocus::AddState,
+        i => ProjectEditorFocus::State(i - 2),
+    }
+}
+
+fn editor_begin_edit(app: &mut App) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let project_id = editor.project.id;
+    match editor.focus {
+        ProjectEditorFocus::Name => {
+            let initial = editor.project.name.clone();
+            app.enter_insert(PendingEdit::EditProjectName { project_id }, &initial);
+            Ok(())
+        }
+        ProjectEditorFocus::Description => {
+            let initial = editor.project.description.clone().unwrap_or_default();
+            app.enter_insert(
+                PendingEdit::EditProjectDescription { project_id },
+                &initial,
+            );
+            Ok(())
+        }
+        ProjectEditorFocus::State(i) => {
+            let Some(state) = editor.project.states.get(i) else {
+                return Ok(());
+            };
+            let state_id = state.id;
+            let initial = state.name.clone();
+            app.enter_insert(PendingEdit::RenameState { state_id }, &initial);
+            Ok(())
+        }
+        ProjectEditorFocus::AddState => editor_begin_add_state(app),
+    }
+}
+
+fn editor_begin_edit_wip(app: &mut App) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let ProjectEditorFocus::State(i) = editor.focus else {
+        app.set_status("focus a state to edit its WIP limit");
+        return Ok(());
+    };
+    let Some(state) = editor.project.states.get(i) else {
+        return Ok(());
+    };
+    let state_id = state.id;
+    let initial = state
+        .wip_limit
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    app.enter_insert(PendingEdit::SetStateWipLimit { state_id }, &initial);
+    Ok(())
+}
+
+fn editor_begin_add_state(app: &mut App) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let project_id = editor.project.id;
+    app.enter_insert(PendingEdit::AddState { project_id }, "");
+    Ok(())
+}
+
+async fn editor_delete_state(app: &mut App, services: &AppServices) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let ProjectEditorFocus::State(i) = editor.focus else {
+        app.set_status("focus a state to delete it");
+        return Ok(());
+    };
+    let Some(state) = editor.project.states.get(i).cloned() else {
+        return Ok(());
+    };
+    if editor.project.states.len() <= 1 {
+        app.set_status("cannot delete the only state");
+        return Ok(());
+    }
+    if editor.state_task_counts.get(i).copied().unwrap_or(0) > 0 {
+        app.set_status("state is not empty; delete its tasks first");
+        return Ok(());
+    }
+    project_service(services).remove_state(state.id).await?;
+    refresh_editor_snapshot(app, services, ProjectEditorFocus::State(i)).await
+}
+
+async fn editor_shift_state(
+    app: &mut App,
+    services: &AppServices,
+    delta: i32,
+) -> CoreResult<()> {
+    let Some(editor) = app.project_editor.as_ref() else {
+        return Ok(());
+    };
+    let ProjectEditorFocus::State(i) = editor.focus else {
+        app.set_status("focus a state to reorder it");
+        return Ok(());
+    };
+    let len = editor.project.states.len();
+    if len < 2 {
+        return Ok(());
+    }
+    let target = (i as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    if target == i {
+        return Ok(());
+    }
+    let project_id = editor.project.id;
+    let mut ordered: Vec<StateId> = editor.project.states.iter().map(|s| s.id).collect();
+    let moved = ordered.remove(i);
+    ordered.insert(target, moved);
+    project_service(services)
+        .reorder_states(project_id, &ordered)
+        .await?;
+    refresh_editor_snapshot(app, services, ProjectEditorFocus::State(target)).await
+}
+
+async fn project_rename(
+    app: &mut App,
+    services: &AppServices,
+    project_id: ProjectId,
+    name: String,
+) -> CoreResult<()> {
+    project_service(services).rename(project_id, &name).await?;
+    finish_editor_edit(app, services, ProjectEditorFocus::Name).await
+}
+
+async fn project_set_description(
+    app: &mut App,
+    services: &AppServices,
+    project_id: ProjectId,
+    raw: String,
+) -> CoreResult<()> {
+    let trimmed = raw.trim();
+    let new_desc = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    };
+    let mut project = services
+        .project_repo()
+        .get(project_id)
+        .await?
+        .ok_or_else(|| CoreError::validation("project vanished"))?;
+    project.description = new_desc;
+    services.project_repo().update(&project).await?;
+    finish_editor_edit(app, services, ProjectEditorFocus::Description).await
+}
+
+async fn state_rename(
+    app: &mut App,
+    services: &AppServices,
+    state_id: StateId,
+    name: String,
+) -> CoreResult<()> {
+    project_service(services).rename_state(state_id, &name).await?;
+    let focus = focus_for_state(app, state_id);
+    finish_editor_edit(app, services, focus).await
+}
+
+async fn state_set_wip(
+    app: &mut App,
+    services: &AppServices,
+    state_id: StateId,
+    raw: String,
+) -> CoreResult<()> {
+    let trimmed = raw.trim();
+    let parsed = if trimmed.is_empty() {
+        None
+    } else {
+        match trimmed.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                app.set_status(format!("bad WIP `{trimmed}` — use a positive integer or empty"));
+                app.leave_insert();
+                app.mode = Mode::ProjectEditor;
+                return Ok(());
+            }
+        }
+    };
+    project_service(services).set_wip_limit(state_id, parsed).await?;
+    let focus = focus_for_state(app, state_id);
+    finish_editor_edit(app, services, focus).await
+}
+
+async fn state_add(
+    app: &mut App,
+    services: &AppServices,
+    project_id: ProjectId,
+    name: String,
+) -> CoreResult<()> {
+    project_service(services)
+        .add_state(
+            project_id,
+            NewState {
+                name,
+                wip_limit: None,
+            },
+        )
+        .await?;
+    // Focus the freshly-appended row.
+    let new_index = app
+        .project_editor
+        .as_ref()
+        .map(|e| e.project.states.len())
+        .unwrap_or(0);
+    finish_editor_edit(app, services, ProjectEditorFocus::State(new_index)).await
+}
+
+fn focus_for_state(app: &App, state_id: StateId) -> ProjectEditorFocus {
+    app.project_editor
+        .as_ref()
+        .and_then(|e| {
+            e.project
+                .states
+                .iter()
+                .position(|s| s.id == state_id)
+                .map(ProjectEditorFocus::State)
+        })
+        .unwrap_or(ProjectEditorFocus::Name)
+}
+
+/// Common tail for editor field submits: reload the editor snapshot, dismiss
+/// the prompt, and return to the editor overlay.
+async fn finish_editor_edit(
+    app: &mut App,
+    services: &AppServices,
+    focus: ProjectEditorFocus,
+) -> CoreResult<()> {
+    refresh_editor_snapshot(app, services, focus).await?;
+    app.leave_insert();
+    app.mode = Mode::ProjectEditor;
+    Ok(())
 }

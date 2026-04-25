@@ -4,16 +4,17 @@
 //! pending-edit buffer used while the user is typing in Insert mode. All
 //! persistence calls go through [`AppServices`] into `kantui_core` services.
 
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kantui_core::{
-    CoreError, CoreResult, IdGenerator, NewProject, NewTask, Priority, Project, ProjectRepository,
-    ProjectService, StateId, StateSojourn, StatsService, Tag, TagId, TagRepository, TagService,
-    Task, TaskId, TaskRepository, TaskService, Throughput,
+    CoreError, CoreResult, IdGenerator, NewProject, NewTask, Priority, Project, ProjectId,
+    ProjectRepository, ProjectService, StateId, StateSojourn, StatsService, Tag, TagId,
+    TagRepository, TagService, Task, TaskId, TaskRepository, TaskService, Throughput,
 };
 use kantui_store::sqlite::{SqliteProjectRepo, SqliteTagRepo, SqliteTaskRepo};
 use kantui_store::{SqlitePool, SystemClock, UuidV4};
-use kantui_widgets::{InputState, Theme};
+use kantui_widgets::{InputState, ProjectEditorFocus, Theme};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
@@ -39,6 +40,8 @@ pub enum Mode {
     TagPicker,
     Dashboard,
     TaskDetail,
+    ProjectPicker,
+    ProjectEditor,
 }
 
 /// What the user is currently typing into in Insert mode.
@@ -56,6 +59,20 @@ pub enum PendingEdit {
     EditDescription { task_id: TaskId },
     /// Set a task's due date from a `YYYY-MM-DD` string; empty input clears it.
     EditDueDate { task_id: TaskId },
+    /// Rename the project shown in the editor.
+    EditProjectName { project_id: ProjectId },
+    /// Replace the project description; empty input clears it.
+    EditProjectDescription { project_id: ProjectId },
+    /// Rename a state inside the project editor.
+    RenameState { state_id: StateId },
+    /// Replace a state's WIP limit. Empty input clears it; a positive integer
+    /// sets it.
+    SetStateWipLimit { state_id: StateId },
+    /// Add a new state to the project shown in the editor.
+    AddState { project_id: ProjectId },
+    /// Create a new project from the picker. After submit, the new project
+    /// becomes active.
+    NewProject,
 }
 
 /// In-memory snapshot of what's on screen. The repository is queried once
@@ -104,8 +121,33 @@ pub struct App {
     /// inspected and a cached per-state sojourn list (refreshed each time the
     /// overlay opens).
     pub task_detail: Option<TaskDetailSnapshot>,
+    /// Active project picker overlay (list of projects + selection cursor).
+    pub project_picker: Option<ProjectPickerSnapshot>,
+    /// Active project editor overlay (working copy of one project).
+    pub project_editor: Option<ProjectEditorSnapshot>,
     /// Rendering palette — resolved from config at startup.
     pub theme: Theme,
+}
+
+/// Cached state behind the project-picker overlay.
+#[derive(Debug, Clone)]
+pub struct ProjectPickerSnapshot {
+    pub projects: Vec<Project>,
+    /// Total tasks per project (parallel to `projects`).
+    pub task_counts: Vec<u32>,
+    pub selected: usize,
+}
+
+/// Cached state behind the project-editor overlay.
+#[derive(Debug, Clone)]
+pub struct ProjectEditorSnapshot {
+    pub project: Project,
+    /// Task count per state (parallel to `project.states`).
+    pub state_task_counts: Vec<u32>,
+    pub focus: ProjectEditorFocus,
+    /// When `true`, closing the editor returns to the picker; otherwise it
+    /// returns to Normal mode.
+    pub return_to_picker: bool,
 }
 
 /// State cached while the TaskDetail overlay is open.
@@ -188,6 +230,8 @@ impl App {
             tag_picker: None,
             dashboard: None,
             task_detail: None,
+            project_picker: None,
+            project_editor: None,
             theme: config.theme,
         }
     }
@@ -417,12 +461,29 @@ pub struct AppServices {
     pool: SqlitePool,
     clock: SystemClock,
     ids: UuidV4,
+    /// Path of the UI-state file. Used to persist e.g. last opened project.
+    state_path: PathBuf,
 }
 
 impl AppServices {
     #[must_use]
-    pub fn new(pool: SqlitePool, clock: SystemClock, ids: UuidV4) -> Self {
-        Self { pool, clock, ids }
+    pub fn new(
+        pool: SqlitePool,
+        clock: SystemClock,
+        ids: UuidV4,
+        state_path: PathBuf,
+    ) -> Self {
+        Self {
+            pool,
+            clock,
+            ids,
+            state_path,
+        }
+    }
+
+    #[must_use]
+    pub fn state_path(&self) -> &std::path::Path {
+        &self.state_path
     }
 
     #[must_use]

@@ -9,6 +9,8 @@ pub mod dashboard;
 pub mod help;
 pub mod input;
 pub mod jump_labels;
+pub mod project_editor;
+pub mod project_picker;
 pub mod state_column;
 pub mod status_bar;
 pub mod task_card;
@@ -21,6 +23,10 @@ pub use dashboard::{Dashboard, DashboardStateRow, DashboardThroughput, Dashboard
 pub use help::{HelpOverlay, HelpRow};
 pub use input::{Input, InputState};
 pub use jump_labels::{JumpLabelView, JumpLabels};
+pub use project_editor::{
+    ProjectEditor, ProjectEditorFocus, ProjectEditorStateRow, ProjectEditorView,
+};
+pub use project_picker::{ProjectPicker, ProjectPickerRow, ProjectPickerView};
 pub use state_column::StateColumn;
 pub use status_bar::{StatusBar, StatusBarView, StatusCounts};
 pub use task_card::TaskCard;

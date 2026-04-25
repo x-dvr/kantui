@@ -27,6 +27,11 @@ pub struct Args {
     #[arg(long)]
     pub config: Option<PathBuf>,
 
+    /// Path to the persisted UI state file (last opened project, ...).
+    /// Defaults to `<data>/kantui/state.toml`.
+    #[arg(long)]
+    pub state: Option<PathBuf>,
+
     /// Write a default config file to the config path and exit.
     #[arg(long, default_value_t = false)]
     pub gen_conf: bool,
@@ -43,6 +48,7 @@ pub struct Resolved {
     pub log_path: PathBuf,
     pub log_level: String,
     pub config_path: PathBuf,
+    pub state_path: PathBuf,
     pub gen_conf: bool,
     pub seed_demo: bool,
 }
@@ -56,12 +62,16 @@ impl Args {
         let config_path = self
             .config
             .unwrap_or_else(|| default_config_path(dirs.as_ref()));
+        let state_path = self
+            .state
+            .unwrap_or_else(|| default_state_path(dirs.as_ref()));
 
         Resolved {
             db_url,
             log_path,
             log_level: self.log_level,
             config_path,
+            state_path,
             gen_conf: self.gen_conf,
             seed_demo: self.seed_demo,
         }
@@ -83,4 +93,9 @@ fn default_log_path(dirs: Option<&ProjectDirs>) -> PathBuf {
 fn default_config_path(dirs: Option<&ProjectDirs>) -> PathBuf {
     dirs.map(|d| d.config_dir().join("config.toml"))
         .unwrap_or_else(|| PathBuf::from("./kantui.toml"))
+}
+
+fn default_state_path(dirs: Option<&ProjectDirs>) -> PathBuf {
+    dirs.map(|d| d.data_dir().join("state.toml"))
+        .unwrap_or_else(|| PathBuf::from("./kantui-state.toml"))
 }
