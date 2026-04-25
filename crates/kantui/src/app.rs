@@ -467,12 +467,7 @@ pub struct AppServices {
 
 impl AppServices {
     #[must_use]
-    pub fn new(
-        pool: SqlitePool,
-        clock: SystemClock,
-        ids: UuidV4,
-        state_path: PathBuf,
-    ) -> Self {
+    pub fn new(pool: SqlitePool, clock: SystemClock, ids: UuidV4, state_path: PathBuf) -> Self {
         Self {
             pool,
             clock,

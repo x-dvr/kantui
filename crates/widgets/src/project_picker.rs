@@ -117,10 +117,7 @@ fn build_row<'a>(row: &ProjectPickerRow<'a>, selected: bool, theme: &Theme) -> L
             Style::default().fg(theme.accent),
         ));
     }
-    spans.push(Span::styled(
-        counts,
-        Style::default().fg(theme.muted),
-    ));
+    spans.push(Span::styled(counts, Style::default().fg(theme.muted)));
 
     if let Some(desc) = row.description {
         if !desc.trim().is_empty() {

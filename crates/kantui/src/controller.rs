@@ -289,10 +289,11 @@ fn prompt_return_mode(app: &App) -> Mode {
                 Mode::Normal
             }
         }
-        Some(
-            PendingEdit::EditDescription { .. }
-            | PendingEdit::EditDueDate { .. },
-        ) if app.task_detail.is_some() => Mode::TaskDetail,
+        Some(PendingEdit::EditDescription { .. } | PendingEdit::EditDueDate { .. })
+            if app.task_detail.is_some() =>
+        {
+            Mode::TaskDetail
+        }
         _ => Mode::Normal,
     }
 }
@@ -1178,10 +1179,7 @@ async fn build_picker_snapshot(
     }
 
     let preferred = prefer.unwrap_or(app.board.project.id);
-    let selected = projects
-        .iter()
-        .position(|p| p.id == preferred)
-        .unwrap_or(0);
+    let selected = projects.iter().position(|p| p.id == preferred).unwrap_or(0);
 
     Ok(ProjectPickerSnapshot {
         projects,
@@ -1300,16 +1298,14 @@ async fn picker_delete_selected(app: &mut App, services: &AppServices) -> CoreRe
             snapshot = build_picker_snapshot(app, services, Some(app.board.project.id)).await?;
         }
     }
-    snapshot.selected = snapshot.selected.min(snapshot.projects.len().saturating_sub(1));
+    snapshot.selected = snapshot
+        .selected
+        .min(snapshot.projects.len().saturating_sub(1));
     app.project_picker = Some(snapshot);
     Ok(())
 }
 
-async fn project_create(
-    app: &mut App,
-    services: &AppServices,
-    name: String,
-) -> CoreResult<()> {
+async fn project_create(app: &mut App, services: &AppServices, name: String) -> CoreResult<()> {
     let svc = project_service(services);
     let created = svc
         .create(NewProject {
@@ -1470,10 +1466,7 @@ fn editor_begin_edit(app: &mut App) -> CoreResult<()> {
         }
         ProjectEditorFocus::Description => {
             let initial = editor.project.description.clone().unwrap_or_default();
-            app.enter_insert(
-                PendingEdit::EditProjectDescription { project_id },
-                &initial,
-            );
+            app.enter_insert(PendingEdit::EditProjectDescription { project_id }, &initial);
             Ok(())
         }
         ProjectEditorFocus::State(i) => {
@@ -1501,10 +1494,7 @@ fn editor_begin_edit_wip(app: &mut App) -> CoreResult<()> {
         return Ok(());
     };
     let state_id = state.id;
-    let initial = state
-        .wip_limit
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let initial = state.wip_limit.map(|n| n.to_string()).unwrap_or_default();
     app.enter_insert(PendingEdit::SetStateWipLimit { state_id }, &initial);
     Ok(())
 }
@@ -1541,11 +1531,7 @@ async fn editor_delete_state(app: &mut App, services: &AppServices) -> CoreResul
     refresh_editor_snapshot(app, services, ProjectEditorFocus::State(i)).await
 }
 
-async fn editor_shift_state(
-    app: &mut App,
-    services: &AppServices,
-    delta: i32,
-) -> CoreResult<()> {
+async fn editor_shift_state(app: &mut App, services: &AppServices, delta: i32) -> CoreResult<()> {
     let Some(editor) = app.project_editor.as_ref() else {
         return Ok(());
     };
@@ -1609,7 +1595,9 @@ async fn state_rename(
     state_id: StateId,
     name: String,
 ) -> CoreResult<()> {
-    project_service(services).rename_state(state_id, &name).await?;
+    project_service(services)
+        .rename_state(state_id, &name)
+        .await?;
     let focus = focus_for_state(app, state_id);
     finish_editor_edit(app, services, focus).await
 }
@@ -1627,14 +1615,18 @@ async fn state_set_wip(
         match trimmed.parse::<u32>() {
             Ok(n) if n > 0 => Some(n),
             _ => {
-                app.set_status(format!("bad WIP `{trimmed}` — use a positive integer or empty"));
+                app.set_status(format!(
+                    "bad WIP `{trimmed}` — use a positive integer or empty"
+                ));
                 app.leave_insert();
                 app.mode = Mode::ProjectEditor;
                 return Ok(());
             }
         }
     };
-    project_service(services).set_wip_limit(state_id, parsed).await?;
+    project_service(services)
+        .set_wip_limit(state_id, parsed)
+        .await?;
     let focus = focus_for_state(app, state_id);
     finish_editor_edit(app, services, focus).await
 }
