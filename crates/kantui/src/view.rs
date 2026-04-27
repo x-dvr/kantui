@@ -1,13 +1,16 @@
 //! Rendering — pure: read from [`App`], write to the frame. No mutation.
 
+use crossterm::event::{KeyCode, KeyEvent};
 use kantui_core::Task;
 use kantui_widgets::{
-    BoardView, BoardViewModel, Dashboard, DashboardStateRow, DashboardThroughput, DashboardView,
-    HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode, ProjectEditor,
-    ProjectEditorStateRow, ProjectEditorView, ProjectPicker, ProjectPickerRow, ProjectPickerView,
-    StateColumnView, StatusBar, StatusBarView, StatusCounts, TagChip, TaskCardView, TaskDetail,
-    TaskDetailView, Theme,
+    BoardView, BoardViewModel, ChordHelp, Dashboard, DashboardStateRow, DashboardThroughput,
+    DashboardView, HelpOverlay, HelpRow, Input, JumpLabelView, JumpLabels, Mode as WidgetMode,
+    ProjectEditor, ProjectEditorStateRow, ProjectEditorView, ProjectPicker, ProjectPickerRow,
+    ProjectPickerView, StateColumnView, StatusBar, StatusBarView, StatusCounts, TagChip,
+    TaskCardView, TaskDetail, TaskDetailView, Theme,
 };
+
+use crate::keybinds::Key;
 
 use crate::app::BoardSnapshot;
 use ratatui::Frame;
@@ -98,6 +101,78 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 
     if app.show_help {
         frame.render_widget(HelpOverlay::new("Keybindings", HELP_ROWS, &theme), area);
+    }
+
+    if app.mode == Mode::Normal
+        && let Some(pending) = app.keymap.pending()
+    {
+        render_chord_help(frame, board_area, app, pending, &theme);
+    }
+}
+
+fn render_chord_help(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    pending: KeyEvent,
+    theme: &Theme,
+) {
+    let completions = app.keymap.chord_completions(&pending);
+    if completions.is_empty() {
+        return;
+    }
+    // Own the strings referenced by HelpRow for the duration of this call.
+    let owned: Vec<(String, &'static str)> = completions
+        .into_iter()
+        .map(|(k, action)| (key_label(&k), action.description()))
+        .collect();
+    let rows: Vec<HelpRow<'_>> = owned
+        .iter()
+        .map(|(k, d)| HelpRow {
+            keys: k.as_str(),
+            description: d,
+        })
+        .collect();
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Snap the popup area to the rightmost column so its left/right borders
+    // line up with the column borders (mirrors `widgets::board` layout math).
+    let n = app.board.project.states.len().max(1) as u16;
+    let column_width = (area.width / n).max(MIN_COLUMN_WIDTH.min(area.width));
+    let height = (rows.len() as u16).saturating_add(2).min(area.height);
+    let x = area.x + (n - 1) * column_width;
+    let max_width = (area.x + area.width).saturating_sub(x);
+    let width = column_width.min(max_width);
+    if width < 3 || height < 3 {
+        return;
+    }
+    let y = area.y + area.height - height;
+    let popup_area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    frame.render_widget(ChordHelp::new(&rows, theme), popup_area);
+}
+
+/// Format a [`Key`] as a short label suitable for the chord-help overlay.
+fn key_label(k: &Key) -> String {
+    match k.code {
+        KeyCode::Char(' ') => "space".to_owned(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Esc => "esc".to_owned(),
+        KeyCode::Enter => "enter".to_owned(),
+        KeyCode::Tab => "tab".to_owned(),
+        KeyCode::Backspace => "bs".to_owned(),
+        KeyCode::Delete => "del".to_owned(),
+        KeyCode::Left => "←".to_owned(),
+        KeyCode::Right => "→".to_owned(),
+        KeyCode::Up => "↑".to_owned(),
+        KeyCode::Down => "↓".to_owned(),
+        other => format!("{other:?}"),
     }
 }
 

@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::Action;
 use crate::app::Mode;
-use crate::keybinds::{Binding, Keybinds};
+use crate::keybinds::{Binding, Key, Keybinds};
 
 /// Mode-aware dispatcher. Holds the configured [`Keybinds`] plus the in-flight
 /// chord prefix (for keys like `gg`).
@@ -41,6 +41,30 @@ impl Keymap {
     pub fn set_binds(&mut self, binds: Keybinds) {
         self.binds = binds;
         self.pending = None;
+    }
+
+    /// First key of an in-flight chord, if the user has pressed one and is
+    /// waiting on the second key.
+    #[must_use]
+    pub fn pending(&self) -> Option<KeyEvent> {
+        self.pending
+    }
+
+    /// All `(second_key, action)` pairs whose chord starts with `first`.
+    /// Used by the chord-help overlay to list possible completions.
+    #[must_use]
+    pub fn chord_completions(&self, first: &KeyEvent) -> Vec<(Key, Action)> {
+        let mut out = Vec::new();
+        for (list, action) in entries(&self.binds) {
+            for b in list {
+                if let Binding::Chord(a, z) = b
+                    && a.matches(first)
+                {
+                    out.push((*z, action));
+                }
+            }
+        }
+        out
     }
 
     pub fn dispatch(&mut self, mode: Mode, key: KeyEvent) -> Action {

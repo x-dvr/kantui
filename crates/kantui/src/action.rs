@@ -127,3 +127,66 @@ pub enum Action {
     /// Move the focused state down one position.
     EditorShiftStateDown,
 }
+
+impl Action {
+    /// Short, human-readable label for an action — used by the chord-help
+    /// overlay to describe what each second key does.
+    #[must_use]
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::Noop => "",
+            Self::Quit => "Quit",
+            Self::FocusPrevColumn => "Focus previous column",
+            Self::FocusNextColumn => "Focus next column",
+            Self::SelectPrevTask => "Select previous task",
+            Self::SelectNextTask => "Select next task",
+            Self::SelectFirstTask => "Top of column",
+            Self::SelectLastTask => "Bottom of column",
+            Self::BeginNewTaskBelow => "New task below",
+            Self::BeginNewTaskAbove => "New task above",
+            Self::BeginRenameTask => "Rename task",
+            Self::DeleteTask => "Delete task",
+            Self::MoveTaskPrevColumn => "Move task to previous column",
+            Self::MoveTaskNextColumn => "Move task to next column",
+            Self::ShiftTaskUp => "Shift task up",
+            Self::ShiftTaskDown => "Shift task down",
+            Self::InsertChar(_)
+            | Self::InsertBackspace
+            | Self::InsertDelete
+            | Self::InsertMoveLeft
+            | Self::InsertMoveRight
+            | Self::InsertMoveHome
+            | Self::InsertMoveEnd
+            | Self::InsertSubmit
+            | Self::InsertCancel => "",
+            Self::BeginCommand => "Command mode",
+            Self::BeginSearch => "Search",
+            Self::BeginJump => "Jump to task",
+            Self::ToggleHelp => "Toggle help",
+            Self::Escape => "",
+            Self::JumpChar(_) | Self::JumpCancel => "",
+            Self::BeginTagPicker => "Tag picker",
+            Self::TagPickerChar(_) | Self::TagPickerCancel => "",
+            Self::OpenDashboard => "Statistics dashboard",
+            Self::CloseDashboard => "",
+            Self::OpenTaskDetail => "Task detail",
+            Self::CloseTaskDetail => "",
+            Self::CycleTaskPriority => "Cycle priority",
+            Self::CycleTaskComplexity => "Cycle complexity",
+            Self::BeginEditDescription => "Edit description",
+            Self::BeginEditDueDate => "Edit due date",
+            Self::OpenProjectPicker => "Project picker",
+            Self::CloseProjectPicker => "",
+            Self::PickerSelectPrev | Self::PickerSelectNext => "",
+            Self::PickerActivate => "",
+            Self::PickerEditSelected => "",
+            Self::PickerNewProject => "",
+            Self::PickerDeleteSelected => "",
+            Self::CloseProjectEditor => "",
+            Self::EditorFocusPrev | Self::EditorFocusNext => "",
+            Self::EditorBeginEdit | Self::EditorBeginEditWip => "",
+            Self::EditorAddState | Self::EditorDeleteState => "",
+            Self::EditorShiftStateUp | Self::EditorShiftStateDown => "",
+        }
+    }
+}

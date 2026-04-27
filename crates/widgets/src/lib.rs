@@ -5,6 +5,7 @@
 //! binary assembles view models from domain entities and hands them in.
 
 pub mod board;
+pub mod chord_help;
 pub mod dashboard;
 pub mod help;
 pub mod input;
@@ -19,6 +20,7 @@ pub mod theme;
 pub mod view;
 
 pub use board::BoardView;
+pub use chord_help::ChordHelp;
 pub use dashboard::{Dashboard, DashboardStateRow, DashboardThroughput, DashboardView};
 pub use help::{HelpOverlay, HelpRow};
 pub use input::{Input, InputState};
